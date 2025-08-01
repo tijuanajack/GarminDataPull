@@ -3,7 +3,7 @@ name: Daily Garmin Sync
 
 on:
   schedule:
-    - cron: '17 5 * * *'
+    - cron: '0 15 * * *'
   workflow_dispatch:
 
 jobs:
