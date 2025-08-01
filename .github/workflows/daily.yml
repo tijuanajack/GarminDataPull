@@ -1,22 +1,41 @@
+<<<<<<< HEAD
 
 name: Daily Garmin Sync
 
 on:
   schedule:
     - cron: '17 5 * * *'   # 05:17 UTC daily
+=======
+name: 🕓 Daily Garmin Sync
+
+on:
+>>>>>>> 89fea6ce83266df174acaf6df8ef1d951d24b562
   workflow_dispatch:
+  schedule:
+    - cron: '0 12 * * *'
 
 jobs:
+<<<<<<< HEAD
   garmin:
     runs-on: ubuntu-latest
+=======
+  sync-garmin-data:
+    runs-on: ubuntu-latest
+
+>>>>>>> 89fea6ce83266df174acaf6df8ef1d951d24b562
     env:
       GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
       GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
       GARMIN_MFA_CODE: ${{ secrets.GARMIN_MFA_CODE }}
 
     steps:
+<<<<<<< HEAD
       - name: 🛎️ Checkout private repo
         uses: actions/checkout@v4
+=======
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v3
+>>>>>>> 89fea6ce83266df174acaf6df8ef1d951d24b562
 
       - name: 🐍 Setup Python
         uses: actions/setup-python@v5
@@ -25,6 +44,7 @@ jobs:
 
       - name: 📦 Install deps
         run: |
+<<<<<<< HEAD
           python -m pip install --quiet --upgrade pip
           pip install --quiet garminconnect pandas
 
@@ -53,3 +73,19 @@ jobs:
           git add latest_summary.csv
           git commit -m "📊 update $(date +'%Y-%m-%d')" || echo "no changes"
           git push
+=======
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: ▶️ Run Garmin Data Agent
+        run: |
+          python garmin_agent/garmin_to_drive.py
+
+      - name: 📤 Commit summary CSVs  
+        run: |
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add garmin_agent/data/garmin_summary_*.csv garmin_agent/data/latest_summary.csv || true
+          git commit -m "🔄 Update Garmin summary for $(date +'%Y-%m-%d')" || echo "No changes to commit"
+          git push https://tijuanajack:${{ secrets.PUBLIC_REPO_PUSH_TOKEN }}@github.com/tijuanajack/garmin-health-data.git HEAD:main
+>>>>>>> 89fea6ce83266df174acaf6df8ef1d951d24b562
