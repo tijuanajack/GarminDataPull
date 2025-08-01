@@ -33,12 +33,15 @@ jobs:
 
       # commit summary into *this* (private) repo
       - name: 📝 Commit CSVs to private repo
+        env:    
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # built-in token, already present
         run: |
           git config user.name github-actions
           git config user.email github-actions@github.com
           git add garmin_agent/data/*.csv
           git commit -m "🔄 update summary $(date +'%Y-%m-%d')" || echo "no changes"
-          git push
+          git push https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git HEAD:main
+
 
       # push latest_summary.csv to public repo
       - name: 🚀 Push latest_summary.csv to public repo
