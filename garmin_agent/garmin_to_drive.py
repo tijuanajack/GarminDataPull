@@ -5,23 +5,6 @@ import json
 from datetime import datetime, timedelta
 import pandas as pd
 
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
-
-def upload_to_drive(file_path, folder_id, creds_json):
-    credentials = service_account.Credentials.from_service_account_info(json.loads(creds_json))
-    service = build('drive', 'v3', credentials=credentials)
-
-    file_metadata = {
-        'name': Path(file_path).name,
-        'parents': [folder_id]
-    }
-    media = MediaFileUpload(file_path, resumable=True)
-
-    uploaded = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-    print(f"📤 Uploaded to Google Drive with file ID: {uploaded.get('id')}")
-
 def login_to_garmin(email, password, mfa=None):
     folder_path = Path(__file__).resolve().parent / "data"
     tokenstore = folder_path / ".garminconnect"
@@ -54,12 +37,27 @@ def login_to_garmin(email, password, mfa=None):
         print("❌ Garmin login failed:", e)
         raise
 
+def extract_summary_data(date_str, data):
+    try:
+        return {
+            "date": date_str,
+            "weight": data["body_composition"].get("weight"),
+            "body_fat": data["body_composition"].get("bodyFat"),
+            "training_readiness": data["training_readiness"].get("trainingReadinessScore"),
+            "training_status": data["training_status"]["trainingStatus"].get("statusType", {}).get("status") if isinstance(data["training_status"], dict) else None,
+            "body_battery": data["body_battery"][0].get("bodyBatteryAvg") if isinstance(data["body_battery"], list) and data["body_battery"] else None,
+            "sleep_score": data["sleep"].get("sleepScores", {}).get("overall", {}).get("value"),
+            "resting_hr": data["resting_hr"].get("restingHeartRate"),
+            "stress_level": data["stress"].get("dailyStress", {}).get("score")
+        }
+    except Exception as e:
+        print(f"⚠️ Error extracting summary for {date_str}: {e}")
+        return None
+
 def main():
     email = os.environ.get("GARMIN_EMAIL")
     password = os.environ.get("GARMIN_PASSWORD")
     mfa = os.environ.get("GARMIN_MFA_CODE")
-    drive_folder_id = os.environ.get("GOOGLE_DRIVE_FOLDER_ID")
-    drive_creds_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
 
     if not all([email, password]):
         raise RuntimeError("GARMIN_EMAIL and GARMIN_PASSWORD must be set as environment variables.")
@@ -67,12 +65,11 @@ def main():
     client = login_to_garmin(email, password, mfa)
 
     folder_path = Path(__file__).resolve().parent / "data"
-    out_json_dir = folder_path
-    out_json_dir.mkdir(parents=True, exist_ok=True)
+    folder_path.mkdir(parents=True, exist_ok=True)
 
     today = datetime.today().date()
     days_back = 30
-    summary_records = []
+    summary = []
 
     for i in range(days_back):
         date_obj = today - timedelta(days=i)
@@ -80,36 +77,48 @@ def main():
         print(f"\n📅 Pulling data for {date_str}...")
 
         try:
-            steps = client.get_steps_data(date_str)
-            sleep = client.get_sleep_data(date_str)
-            stress = client.get_stress_data(date_str)
-            readiness = client.get_training_readiness(date_str)
-            battery = client.get_body_battery(date_str, date_str)
-
-            record = {
-                "date": date_str,
-                "steps": steps[0].get("steps") if steps else None,
-                "sleep_score": sleep.get("sleepScores", {}).get("overall", None),
-                "stress_level": stress[0].get("stressLevel") if isinstance(stress, list) and stress else None,
-                "readiness_score": readiness.get("score", None),
-                "body_battery_avg": battery.get("bodyBatterySummary", {}).get("averageBodyBattery", None)
+            data = {
+                "activity_stats": client.get_stats(date_str),
+                "body_composition": client.get_body_composition(date_str),
+                "steps": client.get_steps_data(date_str),
+                "heart_rate": client.get_heart_rates(date_str),
+                "training_readiness": client.get_training_readiness(date_str),
+                "body_battery": client.get_body_battery(date_str, date_str),
+                "training_status": client.get_training_status(date_str),
+                "resting_hr": client.get_rhr_day(date_str),
+                "sleep": client.get_sleep_data(date_str),
+                "stress": client.get_stress_data(date_str),
+                "respiration": client.get_respiration_data(date_str),
+                "spo2": client.get_spo2_data(date_str),
+                "max_metrics": client.get_max_metrics(date_str),
+                "hrv": client.get_hrv_data(date_str),
+                "hill_score": client.get_hill_score(date_str, date_str),
+                "endurance_score": client.get_endurance_score(date_str, date_str),
+                "race_predictions": client.get_race_predictions(),
+                "all_day_stress": client.get_all_day_stress(date_str),
+                "fitness_age": client.get_fitnessage_data(date_str)
             }
-            summary_records.append(record)
+
+            json_file = folder_path / f"{date_str}.json"
+            with open(json_file, "w") as f:
+                json.dump(data, f, indent=4)
+            print(f"✅ Data saved for {date_str}.")
+
+            row = extract_summary_data(date_str, data)
+            if row:
+                summary.append(row)
 
         except Exception as e:
             print(f"❌ Failed to pull data for {date_str}: {e}")
 
-    df = pd.DataFrame(summary_records)
-    csv_file = out_json_dir / f"garmin_summary_{today}.csv"
-    df.to_csv(csv_file, index=False)
-    print(f"✅ Saved 30-day summary: {csv_file}")
+    df = pd.DataFrame(summary)
+    summary_csv = folder_path / f"garmin_summary_{today.isoformat()}.csv"
+    df.to_csv(summary_csv, index=False)
+    print(f"✅ Saved 30-day summary: {summary_csv}")
 
-    latest_summary = out_json_dir / "latest_summary.csv"
-    df.to_csv(latest_summary, index=False)
+    latest_csv = folder_path / "latest_summary.csv"
+    df.to_csv(latest_csv, index=False)
     print("📌 Updated latest_summary.csv")
-
-    if drive_folder_id and drive_creds_json:
-        upload_to_drive(str(csv_file), drive_folder_id, drive_creds_json)
 
 if __name__ == "__main__":
     main()
