@@ -86,7 +86,12 @@ def main():
                 "bb_low":    safe(raw["activity_stats"], "bodyBatteryLowestValue"),
                 "vo2max":    safe(raw["status"], "mostRecentVO2Max", "generic", "vo2MaxValue"),
                 "fitness_age": safe(raw["fitage"], "fitnessAge"),
-                "respiration_avg": safe(first(raw["sleep"].get("dailySleepDTO", {})), "averageRespirationValue"),
+                # ─── average respiration ───
+"respiration_avg": (
+    (raw["resp"] or {}).get("dailySummary", {}).get("averageRespiration")      # normal endpoint
+    or (raw["resp"] or {}).get("averageRespiration")                           # some devices
+    or safe(first(raw["sleep"].get("dailySleepDTO", {})), "averageRespirationValue")  # sleep fallback
+),
                 "acute_training_load": safe(raw["status"], "mostRecentTrainingStatus", "latestTrainingStatusData", "3449644769", "acuteTrainingLoadDTO", "acwrStatus"),
                 "training_need": safe(raw["status"], "mostRecentTrainingLoadBalance", "metricsTrainingLoadBalanceDTOMap", "3449644769", "trainingBalanceFeedbackPhrase"),
             }
