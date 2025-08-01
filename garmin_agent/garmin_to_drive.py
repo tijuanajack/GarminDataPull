@@ -88,10 +88,8 @@ def main():
                 "fitness_age": safe(raw["fitage"], "fitnessAge"),
                # ─── average respiration ───
 "respiration_avg": (
-    (raw["resp"] or {}).get("dailySummary", {}).get("averageRespiration")      # normal
-    or (raw["resp"] or {}).get("averageRespiration")                           # some devices
-    or (raw["resp"] or {}).get("avgRespirationValue")                          # additional key
-    or safe(first(raw["sleep"].get("dailySleepDTO", {})), "averageRespirationValue")  # sleep fallback
+    safe(raw["sleep"], "dailySleepDTO", "averageRespirationValue")
+    or safe(first(raw["sleep"].get("dailySleepDTO", {})), "averageRespirationValue")
 ),
                 "acute_training_load": safe(raw["status"], "mostRecentTrainingStatus", "latestTrainingStatusData", "3449644769", "acuteTrainingLoadDTO", "acwrStatus"),
                 "training_need": safe(raw["status"], "mostRecentTrainingLoadBalance", "metricsTrainingLoadBalanceDTOMap", "3449644769", "trainingBalanceFeedbackPhrase"),
