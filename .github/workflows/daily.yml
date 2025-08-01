@@ -42,7 +42,7 @@ jobs:
         git config user.email actions@github.com
         git add garmin_agent/data/*.csv
         git commit -m "🔄 Update Garmin summary for $(date +'%Y-%m-%d')" || echo "No changes to commit"
-        git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git HEAD:main
+        git push https://tijuanajack:${{ secrets.PRIVATE_REPO_PUSH_TOKEN }}@github.com/tijuanajack/GarminDataPull.git HEAD:main
 
     - name: Push to public repo (garmin-health-data)
       run: |
