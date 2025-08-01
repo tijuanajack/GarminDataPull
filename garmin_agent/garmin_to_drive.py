@@ -91,16 +91,23 @@ def main():
                 "training_need": safe(raw["status"], "mostRecentTrainingLoadBalance", "metricsTrainingLoadBalanceDTOMap", "3449644769", "trainingBalanceFeedbackPhrase"),
             }
 
-            # activities list
-            acts = first(raw["activity_stats"]).get("bodyBatteryActivityEventList", [])
-            if isinstance(acts, list):
+            # ---------- activities list (handles both event lists) ----------
+                acts1 = raw["activity_stats"].get("bodyBatteryActivityEventList", [])
+                acts2 = raw["activity_stats"].get("bodyBatteryAutoActivityEventList", [])
+                events = []
+
+                if isinstance(acts1, list):
+                    events.extend(acts1)
+                if isinstance(acts2, list):
+                    events.extend(acts2)
+
                 pairs = [
                     f"{ev.get('activityType','').lower()}-{ev.get('shortFeedback','').upper()}"
-                    for ev in acts if ev.get("eventType") == "ACTIVITY"
+                    for ev in events
+                    if ev.get("eventType") == "ACTIVITY"
                 ]
-                row["activities"] = ", ".join(pairs)
-            else:
-                row["activities"] = ""
+
+                row["activities"] = ", ".join(pairs) if pairs else None
 
             # body-comp extras
             bc_avg = as_dict(raw["body_composition"]).get("totalAverage", {})
