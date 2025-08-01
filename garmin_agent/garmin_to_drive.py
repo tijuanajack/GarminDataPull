@@ -4,25 +4,21 @@ from datetime import datetime, timedelta
 import pandas as pd
 import os, json
 
-# ──────────────────── helpers ────────────────────
-def safe_val(obj, *keys):
-    """Safely walk nested dict keys; return None if any part missing."""
+# ───────── helpers ─────────
+def as_dict(x):       return x if isinstance(x, dict) else {}
+def first(x):         return x[0] if isinstance(x, list) and x else {}
+def safe(obj, *keys):
     cur = obj
     for k in keys:
-        if isinstance(cur, dict) and k in cur:
-            cur = cur[k]
-        else:
+        cur = as_dict(cur).get(k)
+        if cur is None:
             return None
     return cur
-
-def first(x):
-    """Return first element of list or {}."""
-    return x[0] if isinstance(x, list) and x else {}
 
 def login(email, pwd, mfa):
     store = Path(__file__).parent / "data" / ".garminconnect"
     try:
-        g = Garmin(); g.login(str(store)); return g          # token OK
+        g = Garmin(); g.login(str(store)); return g
     except Exception:
         g = Garmin(email=email, password=pwd, is_cn=False, return_on_mfa=True)
         s1, s2 = g.login()
@@ -31,77 +27,52 @@ def login(email, pwd, mfa):
             g.resume_login(s2, mfa)
         g.garth.dump(str(store)); return g
 
-# ──────────────────── extractor ────────────────────
-def extract_row(d, date_str):
-    bc  = d.get("body_composition", {}) or {}
-    batt= d.get("body_battery", {})     or {}
-    sl  = d.get("sleep", {})            or {}
-    st  = d.get("stress", {})           or {}
-    tr  = d.get("training_readiness",{})or {}
-    steps = d.get("steps", {})          or {}
+# ───────── extractor ─────────
+def extract_row(raw, date_str):
+    bc   = as_dict(raw.get("body_composition"))
+    batt = raw.get("body_battery")
+    batt = batt[0] if isinstance(batt, list) and batt else as_dict(batt)
+    sl   = as_dict(raw.get("sleep"))
+    st   = as_dict(raw.get("stress"))
+    tr   = as_dict(raw.get("training_readiness"))
+    steps= as_dict(raw.get("steps"))
 
-    weight     = safe_val(bc, "totalAverage", "weight") or bc.get("weight")
-    body_fat   = safe_val(bc, "totalAverage", "bodyFat") or bc.get("bodyFat")
+    ts_raw = raw.get("training_status")
+    ts_raw = as_dict(ts_raw)
 
-    if isinstance(batt, list) and batt:
-        body_battery = batt[0].get("bodyBatteryAvg")
-    else:
-        body_battery = (
-            safe_val(batt, "bodyBatterySummary", "average")
-            or batt.get("bodyBatteryAvg")
-        )
+    weight     = safe(bc, "totalAverage", "weight") or bc.get("weight")
+    body_fat   = safe(bc, "totalAverage", "bodyFat") or bc.get("bodyFat")
 
-    readiness = (
-        tr.get("trainingReadinessScore")
-        or tr.get("score")
-        or safe_val(tr, "overallDTO", "score")
-    )
-
-    ts_raw = d.get("training_status")
-    training_status = (
-        safe_val(ts_raw, "trainingStatus", "statusType", "status")
-        if isinstance(ts_raw, dict) else None
-    )
-
-    # respiration average: dailySummary or sleep fallback
-    resp_raw = d.get("resp")
-    respiration_avg = None
-    if isinstance(resp_raw, dict):
-        respiration_avg = safe_val(resp_raw, "dailySummary", "averageRespiration")
-    if respiration_avg is None:
-        respiration_avg = safe_val(first(sl.get("dailySleepDTO", {})),
-                                   "averageRespirationValue")
-
-    # activities list from either bodyBattery list
-    acts_src = (
-        d.get("activity_stats", {}).get("bodyBatteryActivityEventList", [])
-        or d.get("activity_stats", {}).get("bodyBatteryAutoActivityEventList", [])
-    )
-    pairs = []
-    if isinstance(acts_src, list):
-        for ev in acts_src:
-            if ev.get("eventType") == "ACTIVITY":
-                pairs.append(
-                    f"{ev.get('activityType','').lower()}-{ev.get('shortFeedback','').upper()}"
-                )
-    activities = ", ".join(pairs) if pairs else None
-
-    return {
-        "date":             date_str,
-        "weight_kg":        round(weight / 1000, 2) if isinstance(weight, (int, float)) else None,
+    row = {
+        "date": date_str,
+        "weight_kg":        round(weight/1000,2) if isinstance(weight,(int,float)) else None,
         "body_fat_%":       body_fat,
-        "training_ready":   readiness,
-        "training_status":  training_status,
-        "body_battery":     body_battery,
-        "sleep_score":      safe_val(sl, "sleepScores", "overall", "value") or sl.get("overallSleepScore"),
-        "resting_hr":       safe_val(d.get("resting_hr", {}), "restingHeartRate"),
-        "stress_level":     safe_val(st, "dailyStress", "score") or st.get("avgStressLevel"),
-        "respiration_avg":  respiration_avg,
+        "training_ready":   tr.get("trainingReadinessScore") or tr.get("score") or safe(tr,"overallDTO","score"),
+        "training_status":  safe(ts_raw,"trainingStatus","statusType","status"),
+        "body_battery":     batt.get("bodyBatteryAvg") or safe(batt,"bodyBatterySummary","average"),
+        "sleep_score":      safe(sl,"sleepScores","overall","value") or sl.get("overallSleepScore"),
+        "resting_hr":       safe(raw.get("resting_hr",{}),"restingHeartRate"),
+        "stress_level":     safe(st,"dailyStress","score") or st.get("avgStressLevel"),
+        "respiration_avg":  safe(raw.get("resp",{}),"dailySummary","averageRespiration") \
+                            or safe(first(sl.get("dailySleepDTO",{})),"averageRespirationValue"),
         "steps":            steps.get("totalSteps"),
-        "activities":       activities,
+        "activities": None  # fill below
     }
 
-# ──────────────────── main ────────────────────
+    # activities list
+    acts = (
+        raw.get("activity_stats",{}).get("bodyBatteryActivityEventList",[]) or
+        raw.get("activity_stats",{}).get("bodyBatteryAutoActivityEventList",[])
+    )
+    if isinstance(acts,list):
+        row["activities"] = ", ".join(
+            f"{ev.get('activityType','').lower()}-{ev.get('shortFeedback','').upper()}"
+            for ev in acts if ev.get("eventType")=="ACTIVITY"
+        ) or None
+
+    return row
+
+# ───────── main ─────────
 def main():
     email = os.environ["GARMIN_EMAIL"]
     pwd   = os.environ["GARMIN_PASSWORD"]
@@ -118,7 +89,6 @@ def main():
     for i in range(30):
         day = today - timedelta(days=i)
         ds  = day.isoformat()
-        print(f"📅 {ds}")
         try:
             raw = {
                 "activity_stats":     g.get_stats(ds),
@@ -133,9 +103,11 @@ def main():
                 "resp":               g.get_respiration_data(ds),
             }
             rows.append(extract_row(raw, ds))
-
         except Exception as e:
             print(f"⚠️ {ds}: {e}")
+
+    if not rows:
+        raise RuntimeError("No rows extracted; check API responses.")
 
     df = pd.DataFrame(rows).sort_values("date")
     out_csv    = data_dir / f"garmin_summary_{today}.csv"
