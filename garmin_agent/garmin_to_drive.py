@@ -1,4 +1,3 @@
-
 from garminconnect import Garmin
 from pathlib import Path
 import os
@@ -62,25 +61,68 @@ def main():
         print(f"\n📅 Pulling data for {date_str}...")
 
         try:
-            daily_data = {
+            daily_data = {}
+
+            def safe_get(name, func):
+                try:
+                    result = func()
+                    daily_data[name] = result
+                except Exception as e:
+                    print(f"⚠️  Failed to get {name}: {e}")
+                    daily_data[name] = None
+
+            safe_get("activity_stats", lambda: client.get_stats(date_str))
+            safe_get("body_composition", lambda: client.get_body_composition(date_str))
+            safe_get("steps", lambda: client.get_steps_data(date_str))
+            safe_get("heart_rate", lambda: client.get_heart_rates(date_str))
+            safe_get("training_readiness", lambda: client.get_training_readiness(date_str))
+            safe_get("body_battery", lambda: client.get_body_battery(date_str, date_str))
+            safe_get("training_status", lambda: client.get_training_status(date_str))
+            safe_get("resting_hr", lambda: client.get_rhr_day(date_str))
+            safe_get("sleep", lambda: client.get_sleep_data(date_str))
+            safe_get("stress", lambda: client.get_stress_data(date_str))
+            safe_get("respiration", lambda: client.get_respiration_data(date_str))
+            safe_get("spo2", lambda: client.get_spo2_data(date_str))
+            safe_get("max_metrics", lambda: client.get_max_metrics(date_str))
+            safe_get("hrv", lambda: client.get_hrv_data(date_str))
+            safe_get("hill_score", lambda: client.get_hill_score(date_str, date_str))
+            safe_get("endurance_score", lambda: client.get_endurance_score(date_str, date_str))
+            safe_get("race_predictions", lambda: client.get_race_predictions())
+            safe_get("all_day_stress", lambda: client.get_all_day_stress(date_str))
+            safe_get("fitness_age", lambda: client.get_fitnessage_data(date_str))
+
+            # Flatten and store only what we care about
+            summary = {
                 "date": date_str,
-                "readiness": client.get_training_readiness(date_str).get("trainingReadinessScore", 0),
-                "body_battery_avg": client.get_body_battery(date_str, date_str).get("bodyBatteryAverage", 0),
-                "sleep_score": client.get_sleep_data(date_str).get("sleepScores", [{}])[0].get("overall", 0),
-                "stress_avg": client.get_stress_data(date_str).get("avgStressLevel", 0),
-                "resting_hr": client.get_rhr_day(date_str).get("restingHeartRate", 0),
-                "steps": client.get_steps_data(date_str).get("totalSteps", 0),
+                "body_battery_avg": daily_data.get("body_battery", {}).get("bodyBatteryAverage", None),
+                "readiness_score": daily_data.get("training_readiness", {}).get("readinessScore", None),
+                "training_status": daily_data.get("training_status", {}).get("trainingStatus", None),
+                "sleep_score": daily_data.get("sleep", {}).get("sleepScores", [{}])[0].get("overallScore", None),
+                "stress_avg": daily_data.get("stress", {}).get("userStressAllDay", [{}])[0].get("averageStressLevel", None),
+                "resting_hr": daily_data.get("resting_hr", {}).get("restingHeartRate", None),
+                "vo2max": daily_data.get("max_metrics", {}).get("vo2MaxValue", None),
+                "fitness_age": daily_data.get("fitness_age", {}).get("fitnessAge", None),
             }
-            records.append(daily_data)
+
+            records.append(summary)
+
+            json_file = out_json_dir / f"{date_str}.json"
+            with open(json_file, "w") as f:
+                json.dump(daily_data, f, indent=4)
             print(f"✅ Data saved for {date_str}.")
 
         except Exception as e:
             print(f"❌ Failed to pull data for {date_str}: {e}")
 
     df = pd.DataFrame(records)
-    out_csv = out_json_dir / f"garmin_summary_{today.isoformat()}.csv"
-    df.to_csv(out_csv, index=False)
-    print(f"\n✅ Summary saved to: {out_csv}")
+    latest_csv = out_json_dir / f"garmin_summary_{today}.csv"
+    df.to_csv(latest_csv, index=False)
+    print(f"✅ Saved 30-day summary: {latest_csv}")
+
+    # Save/update fixed latest filename
+    fixed_csv = out_json_dir / "latest_summary.csv"
+    df.to_csv(fixed_csv, index=False)
+    print(f"📌 Updated latest_summary.csv")
 
 if __name__ == "__main__":
     main()
