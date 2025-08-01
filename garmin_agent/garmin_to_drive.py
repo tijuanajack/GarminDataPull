@@ -41,18 +41,35 @@ def extract_summary_data(date_str, data):
     try:
         return {
             "date": date_str,
-            "weight": data["body_composition"].get("weight"),
-            "body_fat": data["body_composition"].get("bodyFat"),
-            "training_readiness": data["training_readiness"].get("trainingReadinessScore"),
-            "training_status": data["training_status"]["trainingStatus"].get("statusType", {}).get("status") if isinstance(data["training_status"], dict) else None,
-            "body_battery": data["body_battery"][0].get("bodyBatteryAvg") if isinstance(data["body_battery"], list) and data["body_battery"] else None,
-            "sleep_score": data["sleep"].get("sleepScores", {}).get("overall", {}).get("value"),
-            "resting_hr": data["resting_hr"].get("restingHeartRate"),
-            "stress_level": data["stress"].get("dailyStress", {}).get("score")
+            "weight": data.get("body_composition", {}).get("weight"),
+            "body_fat": data.get("body_composition", {}).get("bodyFat"),
+            "training_readiness": data.get("training_readiness", {}).get("trainingReadinessScore"),
+            "training_status": (
+                data.get("training_status", {}).get("trainingStatus", {}).get("statusType", {}).get("status")
+                if isinstance(data.get("training_status"), dict)
+                else None
+            ),
+            "body_battery": (
+                data.get("body_battery")[0].get("bodyBatteryAvg")
+                if isinstance(data.get("body_battery"), list) and data.get("body_battery")
+                else None
+            ),
+            "sleep_score": (
+                data.get("sleep", {}).get("sleepScores", {}).get("overall", {}).get("value")
+                if isinstance(data.get("sleep"), dict)
+                else None
+            ),
+            "resting_hr": data.get("resting_hr", {}).get("restingHeartRate"),
+            "stress_level": (
+                data.get("stress", {}).get("dailyStress", {}).get("score")
+                if isinstance(data.get("stress"), dict)
+                else None
+            )
         }
     except Exception as e:
         print(f"⚠️ Error extracting summary for {date_str}: {e}")
         return None
+
 
 def main():
     email = os.environ.get("GARMIN_EMAIL")
