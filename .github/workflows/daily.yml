@@ -1,67 +1,57 @@
-name: 🕓 Daily Garmin Sync
+
+name: Daily Garmin Sync
 
 on:
   schedule:
-    # 05:17 UTC every day  (adjust as you like)
     - cron: '17 5 * * *'
   workflow_dispatch:
 
 jobs:
   garmin:
     runs-on: ubuntu-latest
-
     env:
-      # Garmin credentials (set in repo > Settings > Secrets > Actions)
       GARMIN_EMAIL:    ${{ secrets.GARMIN_EMAIL }}
       GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
       GARMIN_MFA_CODE: ${{ secrets.GARMIN_MFA_CODE }}
 
     steps:
-    # 1 Checkout WITHOUT persisting the default token
-    - name: 📥 Checkout private repo
-      uses: actions/checkout@v4
-      with:
-        persist-credentials: false   # <- key line: do NOT write GITHUB_TOKEN into .git/config
+      - name: 📥 Checkout private repo
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
-    # 2 Python setup & dependencies
-    - name: 🐍 Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.10'
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
 
-    - name: 📦 Install dependencies
-      run: |
-        python -m pip install --quiet --upgrade pip
-        pip install --quiet garminconnect pandas
+      - name: 📦 Install deps
+        run: |
+          python -m pip install --quiet --upgrade pip
+          pip install --quiet garminconnect pandas
 
-    # 3 Run the Garmin data agent
-    - name: ▶️ Run Garmin script
-      run: python garmin_agent/garmin_to_drive.py
+      - name: ▶️ Run Garmin agent
+        run: python garmin_agent/garmin_to_drive.py
 
-    # 4 Commit + push CSVs to *private* repo with PAT
-    - name: 📝 Commit CSVs to private repo
-      env:
-        TOKEN: ${{ secrets.PRIVATE_REPO_PUSH_TOKEN }}
-      run: |
-        git config user.name  "github-actions"
-        git config user.email "actions@github.com"
+      - name: 📝 Commit CSVs to private repo
+        env:
+          TOKEN: ${{ secrets.PRIVATE_REPO_PUSH_TOKEN }}
+        run: |
+          git config user.name  "github-actions"
+          git config user.email "actions@github.com"
+          git add garmin_agent/data/*.csv
+          git commit -m "🔄 update summary $(date +'%Y-%m-%d')" || echo "no changes"
+          git push https://x-access-token:${TOKEN}@github.com/${{ github.repository }}.git HEAD:main
 
-        git add garmin_agent/data/garmin_summary_*.csv garmin_agent/data/latest_summary.csv || true
-        git commit -m "🔄 update summary $(date +'%Y-%m-%d')" || echo "no changes"
-
-        # use PAT for auth
-        git push https://x-access-token:${TOKEN}@github.com/${{ github.repository }}.git HEAD:main
-
-    # 5 Push latest_summary.csv to the public repo
-    - name: 🚀 Push latest_summary.csv to public repo
-      env:
-        TOKEN: ${{ secrets.PUBLIC_REPO_PUSH_TOKEN }}
-      run: |
-        git clone https://x-access-token:${TOKEN}@github.com/tijuanajack/garmin-health-data.git public
-        cp garmin_agent/data/latest_summary.csv public/
-        cd public
-        git config user.name  "github-actions"
-        git config user.email "actions@github.com"
-        git add latest_summary.csv
-        git commit -m "📊 update $(date +'%Y-%m-%d')" || echo "no changes"
-        git push
+      - name: 🚀 Push latest_summary.csv to public repo
+        env:
+          TOKEN: ${{ secrets.PUBLIC_REPO_PUSH_TOKEN }}
+        run: |
+          git clone https://x-access-token:${TOKEN}@github.com/tijuanajack/garmin-health-data.git public
+          cp garmin_agent/data/latest_summary.csv public/
+          cd public
+          git config user.name  "github-actions"
+          git config user.email "actions@github.com"
+          git add latest_summary.csv
+          git commit -m "📊 update $(date +'%Y-%m-%d')" || echo "no changes"
+          git push
