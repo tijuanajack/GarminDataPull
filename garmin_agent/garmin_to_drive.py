@@ -92,22 +92,22 @@ def main():
             }
 
             # ---------- activities list (handles both event lists) ----------
-                acts1 = raw["activity_stats"].get("bodyBatteryActivityEventList", [])
-                acts2 = raw["activity_stats"].get("bodyBatteryAutoActivityEventList", [])
-                events = []
+            acts1 = raw["activity_stats"].get("bodyBatteryActivityEventList", [])
+            acts2 = raw["activity_stats"].get("bodyBatteryAutoActivityEventList", [])
+            events = []
 
-                if isinstance(acts1, list):
-                    events.extend(acts1)
-                if isinstance(acts2, list):
-                    events.extend(acts2)
+            if isinstance(acts1, list):
+                events.extend(acts1)
+            if isinstance(acts2, list):
+                events.extend(acts2)
 
-                pairs = [
-                    f"{ev.get('activityType','').lower()}-{ev.get('shortFeedback','').upper()}"
-                    for ev in events
-                    if ev.get("eventType") == "ACTIVITY"
-                ]
+            pairs = [
+                f"{ev.get('activityType','').lower()}-{ev.get('shortFeedback','').upper()}"
+                for ev in events
+                if ev.get("eventType") == "ACTIVITY"
+            ]
 
-                row["activities"] = ", ".join(pairs) if pairs else None
+            row["activities"] = ", ".join(pairs) if pairs else None
 
             # body-comp extras
             bc_avg = as_dict(raw["body_composition"]).get("totalAverage", {})
