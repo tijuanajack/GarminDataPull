@@ -1,115 +1,94 @@
+
 from garminconnect import Garmin
 from pathlib import Path
-import os
-import json
+import os, json
 from datetime import datetime, timedelta
 import pandas as pd
 
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
+# ---------- helpers ----------
+def safe_val(obj, *keys):
+    curr = obj
+    for k in keys:
+        if isinstance(curr, dict) and k in curr:
+            curr = curr[k]
+        else:
+            return None
+    return curr
 
-def upload_to_drive(file_path, folder_id, creds_json):
-    credentials = service_account.Credentials.from_service_account_info(json.loads(creds_json))
-    service = build('drive', 'v3', credentials=credentials)
-
-    file_metadata = {
-        'name': Path(file_path).name,
-        'parents': [folder_id]
-    }
-    media = MediaFileUpload(file_path, resumable=True)
-
-    uploaded = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-    print(f"📤 Uploaded to Google Drive with file ID: {uploaded.get('id')}")
-
+# ---------- login ----------
 def login_to_garmin(email, password, mfa=None):
-    folder_path = Path(__file__).resolve().parent / "data"
-    tokenstore = folder_path / ".garminconnect"
-
-    print(f"🔍 Checking for token at: {tokenstore}")
-    if not (tokenstore / "oauth1_token.json").exists():
-        print("❌ oauth1_token.json not found at expected path.")
-    else:
-        print("✅ Found oauth1_token.json!")
-
-    try:
+    folder = Path(__file__).resolve().parent / "data"
+    tokenstore = folder / ".garminconnect"
+    if (tokenstore / "oauth1_token.json").exists():
+        print("✅ Found saved token; using it")
         client = Garmin()
         client.login(str(tokenstore))
-        print("✅ Logged in using saved token.")
         return client
-    except Exception as e:
-        print(f"⚠️  Token login failed: {e}. Attempting full login...")
 
-    try:
-        client = Garmin(email=email, password=password, is_cn=False, return_on_mfa=True)
-        result1, result2 = client.login()
-        if result1 == "needs_mfa":
-            if mfa is None:
-                raise ValueError("MFA code required but not provided.")
-            client.resume_login(result2, mfa)
-        client.garth.dump(str(tokenstore))
-        print("✅ Logged in with credentials and saved token.")
-        return client
-    except Exception as e:
-        print("❌ Garmin login failed:", e)
-        raise
+    print("ℹ️ Saved token missing or invalid, doing full login")
+    client = Garmin(email=email, password=password, is_cn=False, return_on_mfa=True)
+    result1, result2 = client.login()
+    if result1 == "needs_mfa":
+        if mfa is None:
+            raise RuntimeError("MFA required but GARMIN_MFA_CODE not set")
+        client.resume_login(result2, mfa)
+    client.garth.dump(str(tokenstore))
+    return client
 
+# ---------- summary ----------
+def extract_row(d, date_str):
+    return {
+        "date": date_str,
+        "weight":              safe_val(d.get("body_composition", {}), "weight"),
+        "body_fat":            safe_val(d.get("body_composition", {}), "bodyFat"),
+        "training_readiness":  safe_val(d.get("training_readiness", {}), "trainingReadinessScore"),
+        "training_status":     safe_val(d.get("training_status", {}), "trainingStatus", "statusType", "status"),
+        "body_battery_avg":    d.get("body_battery")[0].get("bodyBatteryAvg") if isinstance(d.get("body_battery"), list) and d["body_battery"] else None,
+        "sleep_score":         safe_val(d.get("sleep", {}), "sleepScores", "overall", "value"),
+        "resting_hr":          safe_val(d.get("resting_hr", {}), "restingHeartRate"),
+        "stress_level":        safe_val(d.get("stress", {}), "dailyStress", "score"),
+        "steps":               safe_val(d.get("steps", {}), "totalSteps")
+    }
+
+# ---------- main ----------
 def main():
-    email = os.environ.get("GARMIN_EMAIL")
-    password = os.environ.get("GARMIN_PASSWORD")
-    mfa = os.environ.get("GARMIN_MFA_CODE")
-    drive_folder_id = os.environ.get("GOOGLE_DRIVE_FOLDER_ID")
-    drive_creds_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
+    email = os.environ["GARMIN_EMAIL"]
+    password = os.environ["GARMIN_PASSWORD"]
+    mfa = os.getenv("GARMIN_MFA_CODE")
 
-    if not all([email, password]):
-        raise RuntimeError("GARMIN_EMAIL and GARMIN_PASSWORD must be set as environment variables.")
+    base = Path(__file__).resolve().parent
+    data_dir = base / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
 
     client = login_to_garmin(email, password, mfa)
 
-    folder_path = Path(__file__).resolve().parent / "data"
-    out_json_dir = folder_path
-    out_json_dir.mkdir(parents=True, exist_ok=True)
-
     today = datetime.today().date()
-    days_back = 30
-    summary_records = []
-
-    for i in range(days_back):
-        date_obj = today - timedelta(days=i)
-        date_str = date_obj.isoformat()
-        print(f"\n📅 Pulling data for {date_str}...")
-
+    rows = []
+    for delta in range(30):
+        day = today - timedelta(days=delta)
+        day_str = day.isoformat()
+        print(f"📅 {day_str}")
         try:
-            steps = client.get_steps_data(date_str)
-            sleep = client.get_sleep_data(date_str)
-            stress = client.get_stress_data(date_str)
-            readiness = client.get_training_readiness(date_str)
-            battery = client.get_body_battery(date_str, date_str)
-
-            record = {
-                "date": date_str,
-                "steps": steps[0].get("steps") if steps else None,
-                "sleep_score": sleep.get("sleepScores", {}).get("overall", None),
-                "stress_level": stress[0].get("stressLevel") if isinstance(stress, list) and stress else None,
-                "readiness_score": readiness.get("score", None),
-                "body_battery_avg": battery.get("bodyBatterySummary", {}).get("averageBodyBattery", None)
+            d = {
+                "body_composition":  client.get_body_composition(day_str),
+                "training_readiness":client.get_training_readiness(day_str),
+                "training_status":   client.get_training_status(day_str),
+                "body_battery":      client.get_body_battery(day_str, day_str),
+                "sleep":             client.get_sleep_data(day_str),
+                "resting_hr":        client.get_rhr_day(day_str),
+                "stress":            client.get_stress_data(day_str),
+                "steps":             client.get_steps_data(day_str),
             }
-            summary_records.append(record)
-
+            rows.append(extract_row(d, day_str))
         except Exception as e:
-            print(f"❌ Failed to pull data for {date_str}: {e}")
+            print(f"⚠️  {day_str} failed: {e}")
 
-    df = pd.DataFrame(summary_records)
-    csv_file = out_json_dir / f"garmin_summary_{today}.csv"
-    df.to_csv(csv_file, index=False)
-    print(f"✅ Saved 30-day summary: {csv_file}")
-
-    latest_summary = out_json_dir / "latest_summary.csv"
-    df.to_csv(latest_summary, index=False)
-    print("📌 Updated latest_summary.csv")
-
-    if drive_folder_id and drive_creds_json:
-        upload_to_drive(str(csv_file), drive_folder_id, drive_creds_json)
+    df = pd.DataFrame(rows)
+    summary_csv = data_dir / f"garmin_summary_{today}.csv"
+    latest_csv = data_dir / "latest_summary.csv"
+    df.to_csv(summary_csv, index=False)
+    df.to_csv(latest_csv, index=False)
+    print(f"✅ Saved {summary_csv.name} and latest_summary.csv")
 
 if __name__ == "__main__":
     main()
