@@ -68,9 +68,10 @@ def main():
             }
 
             # ----- summary row (mirrors Collab logic) -----
+            ready_raw = raw["ready"] or {}
             row = {
                 "date": ds,
-                "readiness":        safe(raw["ready"], "score"),
+                "readiness":        ready_raw.get("trainingReadinessScore") or ready_raw.get("score"),
                 "hrv":              safe(raw["hrv"], "hrvSummary", "lastNightAvg"),
                 "rhr":              safe(raw["heart"], "restingHeartRate"),
                 "sleep_hrs":        round((safe(raw["sleep"], "dailySleepDTO", "sleepTimeSeconds") or 0)/3600,2),
