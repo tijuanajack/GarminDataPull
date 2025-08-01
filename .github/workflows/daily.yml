@@ -1,44 +1,41 @@
-name: Daily Garmin Data Pull
+name: 🕓 Daily Garmin Sync
 
 on:
-  schedule:
-    - cron: '17 5 * * *'
   workflow_dispatch:
+  schedule:
+    - cron: '0 12 * * *'
 
 jobs:
-  run-script:
+  sync-garmin-data:
     runs-on: ubuntu-latest
+
+    env:
+      GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
+      GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
+      GARMIN_MFA_CODE: ${{ secrets.GARMIN_MFA_CODE }}
+
     steps:
-      - name: ⬇️ Checkout repo
+      - name: 📥 Checkout repository
         uses: actions/checkout@v3
 
       - name: 🐍 Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: 3.10
+          python-version: '3.10'
 
       - name: 📦 Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install garminconnect google-api-python-client pandas
+          pip install -r requirements.txt
 
-      - name: 🔐 Set up Git config
-        run: |
-          git config --global user.name "github-actions"
-          git config --global user.email "github-actions@users.noreply.github.com"
-
-      - name: ▶️ Run Garmin script
-        env:
-          GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
-          GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
-          GARMIN_MFA_CODE: ${{ secrets.GARMIN_MFA_CODE }}
+      - name: ▶️ Run Garmin Data Agent
         run: |
           python garmin_agent/garmin_to_drive.py
 
-      - name: 📤 Commit and push summary
-        env:
-          TOKEN: ${{ secrets.PUBLIC_REPO_PUSH_TOKEN }}
+      - name: 📤 Commit summary CSVs
         run: |
-          git pull
-          git add garmin_agent/data/*.csv || echo "No new CSV files to commit."
-          git diff --cached --quiet || (git commit -m "🔄 Update Garmin summary for $(date +'%Y-%m-%d')" && git push https://x-access-token:${TOKEN}@github.com/${{ github.repository }}.git HEAD:main)
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add garmin_agent/data/garmin_summary_*.csv garmin_agent/data/latest_summary.csv || true
+          git commit -m "🔄 Update Garmin summary for $(date +'%Y-%m-%d')" || echo "No changes to commit"
+          git push https://tijuanajack:${{ secrets.PUBLIC_REPO_PUSH_TOKEN }}@github.com/tijuanajack/GarminDataPull.git HEAD:main
