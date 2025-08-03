@@ -63,20 +63,30 @@ jobs:
           THREAD_ID:        ${{ secrets.OPENAI_THREAD_ID }}
         run: |
           python <<'PY'
-          import os, openai, json, pathlib
+          import os, openai, pathlib
           client = openai.OpenAI(api_key=os.environ["OPENAI_KEY"])
 
           csv_path = pathlib.Path("garmin_agent/data/latest_summary.csv")
           up = client.files.create(purpose="assistants", file=open(csv_path, "rb"))
+
+
           client.beta.threads.messages.create(
           thread_id=os.environ["THREAD_ID"],
           role="user",
           content=f"Garmin summary for {csv_path.name}",
-          file_ids=[up.id],
-          )    
+          attachments=[
+          {
+            "file_id": up.id,
+            "tools": [{"type": "code_interpreter"}]
+          }
+              ]
+          )
+
+
           run = client.beta.threads.runs.create(
           thread_id=os.environ["THREAD_ID"],
           assistant_id=os.environ["ASSISTANT_ID"]
           )
           print("✅ Uploaded and started run:", run.id)
+
           PY
