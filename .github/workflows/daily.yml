@@ -1,3 +1,4 @@
+
 name: Daily Garmin Sync
 
 on:
@@ -54,33 +55,3 @@ jobs:
           git add latest_summary.csv
           git commit -m "📊 update $(date +'%Y-%m-%d')" || echo "no changes"
           git push
-          
-- name: 🤖 Send CSV to OpenAI Assistant
-  env:
-    OPENAI_KEY:       ${{ secrets.OPENAI_KEY }}
-    ASSISTANT_ID:     ${{ secrets.OPENAI_ASSISTANT_ID }}
-    THREAD_ID:        ${{ secrets.OPENAI_THREAD_ID }}
-  run: |
-    python <<'PY'
-    import os, openai, json, pathlib
-    client = openai.OpenAI(api_key=os.environ["OPENAI_KEY"])
-
-    csv_path = pathlib.Path("garmin_agent/data/latest_summary.csv")
-    # upload file for assistants
-    up = client.files.create(purpose="assistants", file=open(csv_path, "rb"))
-
-    # post a user message with file attached
-    client.beta.threads.messages.create(
-        thread_id=os.environ["THREAD_ID"],
-        role="user",
-        content=f"Garmin summary for {csv_path.name}",
-        file_ids=[up.id],
-    )
-
-    # run the assistant
-    run = client.beta.threads.runs.create(
-        thread_id=os.environ["THREAD_ID"],
-        assistant_id=os.environ["ASSISTANT_ID"]
-    )
-    print("✅ Uploaded and started run:", run.id)
-    PY
