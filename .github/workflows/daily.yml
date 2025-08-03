@@ -77,6 +77,6 @@ jobs:
           run = client.beta.threads.runs.create(
           thread_id=os.environ["THREAD_ID"],
           assistant_id=os.environ["ASSISTANT_ID"]
-    )
-    print("✅ Uploaded and started run:", run.id)
-    PY
+          )
+          print("✅ Uploaded and started run:", run.id)
+          PY
