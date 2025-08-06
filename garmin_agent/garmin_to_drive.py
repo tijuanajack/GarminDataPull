@@ -91,7 +91,7 @@ def main():
                 "spo2_lowest": safe(raw["spo2"], "lowestSpO2"),
                 "spo2_sleep_avg": safe(raw["spo2"], "avgSleepSpO2"),
                 "spo2_sleep_avg": safe(raw["spo2"], "avgSleepSpO2"),
-                "spo2_7d_avg": safe(raw["spo"], "lastSevenDaysAvgSpO2"),
+                "spo2_7d_avg": safe(raw["spo2"], "lastSevenDaysAvgSpO2"),
                 "steps":     safe(raw["activity_stats"], "totalSteps"),
                 "stress_avg":  safe(raw["activity_stats"], "averageStressLevel"),
                 "stress_dur":  round((safe(raw["activity_stats"], "stressDuration") or 0)/3600,2),
