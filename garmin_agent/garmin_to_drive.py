@@ -76,7 +76,13 @@ def main():
                 "readiness": ready_raw.get("trainingReadinessScore") or ready_raw.get("score"),
                 "hrv":       safe(raw["hrv"], "hrvSummary", "lastNightAvg"),
                 "rhr":       safe(raw["heart"], "restingHeartRate"),
+                "hrv_zone": safe(raw["hrv"], "hrvSummary", "lastNightAvgIncreasedBaseline"),
                 "sleep_hrs": round((safe(raw["sleep"], "dailySleepDTO", "sleepTimeSeconds") or 0)/3600,2),
+                "sleep_score": safe(raw["sleep"], "dailySleepDTO", "sleepScore"),
+                "sleep_rem_min": safe(raw["sleep"], "dailySleepDTO", "remSleepSeconds") // 60,
+                "sleep_deep_min": safe(raw["sleep"], "dailySleepDTO", "deepSleepSeconds") // 60,
+                "sleep_light_min": safe(raw["sleep"], "dailySleepDTO", "lightSleepSeconds") // 60,
+                "sleep_wake_min": safe(raw["sleep"], "dailySleepDTO", "awakeSleepSeconds") // 60,
                 "steps":     safe(raw["activity_stats"], "totalSteps"),
                 "stress_avg":  safe(raw["activity_stats"], "averageStressLevel"),
                 "stress_dur":  round((safe(raw["activity_stats"], "stressDuration") or 0)/3600,2),
@@ -86,6 +92,10 @@ def main():
                 "bb_low":    safe(raw["activity_stats"], "bodyBatteryLowestValue"),
                 "vo2max":    safe(raw["status"], "mostRecentVO2Max", "generic", "vo2MaxValue"),
                 "fitness_age": safe(raw["fitage"], "fitnessAge"),
+                "intensity_min_mod": safe(raw["activity_stats"], "moderateIntensityMinutes"),
+                "intensity_min_vig": safe(raw["activity_stats"], "vigorousIntensityMinutes"),
+                "spo2_avg": safe(raw["spo2"], "avgSpo2"),
+
                # ─── average respiration ───
 "respiration_avg": (
     safe(raw["sleep"], "dailySleepDTO", "averageRespirationValue")
