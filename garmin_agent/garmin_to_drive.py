@@ -94,7 +94,8 @@ def main():
                 "fitness_age": safe(raw["fitage"], "fitnessAge"),
                 "intensity_min_mod": safe(raw["activity_stats"], "moderateIntensityMinutes"),
                 "intensity_min_vig": safe(raw["activity_stats"], "vigorousIntensityMinutes"),
-                "spo2_avg": safe(raw["spo2"], "avgSpo2"),
+                "spo2_avg": round(sum(d.get("spo2Value", 0) for d in raw["spo2"].get("spo2Values", []) if d.get("spo2Value") is not None) / max(1, len(raw["spo2"].get("spo2Values", []))), 1),
+
 
                # ─── average respiration ───
 "respiration_avg": (
