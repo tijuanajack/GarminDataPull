@@ -80,7 +80,7 @@ def main():
                 "rhr":       safe(raw["heart"], "restingHeartRate"),
                 "hrv_zone": safe(raw["hrv"], "hrvSummary", "lastNightAvgIncreasedBaseline"),
                 "sleep_hrs": round((safe(raw["sleep"], "dailySleepDTO", "sleepTimeSeconds") or 0)/3600,2),
-                "sleep_score": safe(raw["sleep"], "dailySleepDTO", "sleepScore"),
+                "sleep_score": safe(raw["sleep"], "dailySleepDTO", "sleepScore") or safe(raw["sleep"], "sleepDTO", "sleepScore"),
                 "sleep_rem_min": safe(raw["sleep"], "dailySleepDTO", "remSleepSeconds") // 60,
                 "sleep_deep_min": safe(raw["sleep"], "dailySleepDTO", "deepSleepSeconds") // 60,
                 "sleep_light_min": safe(raw["sleep"], "dailySleepDTO", "lightSleepSeconds") // 60,
