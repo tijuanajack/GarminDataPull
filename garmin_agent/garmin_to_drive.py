@@ -70,7 +70,9 @@ def main():
                     raw[k] = v[0] if v else {}
             # -----SPO HANDLER        
             spo2_values = [d.get("spo2Value") for d in raw["spo2"].get("spo2Values", []) if d.get("spo2Value") not in (None, 0)]
-            
+
+            #----- PRINT VALUES For Troubleshootnig
+            print(json.dumps(raw["hrv"], indent=2))
 
             # --------- summary row (mirrors Collab logic) ----------
             ready_raw = raw["ready"] or {}
