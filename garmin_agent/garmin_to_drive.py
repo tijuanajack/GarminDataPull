@@ -72,7 +72,7 @@ def main():
             spo2_values = [d.get("spo2Value") for d in raw["spo2"].get("spo2Values", []) if d.get("spo2Value") not in (None, 0)]
 
             #----- PRINT VALUES For Troubleshootnig
-            print(json.dumps(raw["hrv"], indent=2))
+            print(json.dumps(raw["spo"], indent=2))
 
             # --------- summary row (mirrors Collab logic) ----------
             ready_raw = raw["ready"] or {}
@@ -81,7 +81,7 @@ def main():
                 "readiness": ready_raw.get("trainingReadinessScore") or ready_raw.get("score"),
                 "hrv":       safe(raw["hrv"], "hrvSummary", "lastNightAvg"),
                 "rhr":       safe(raw["heart"], "restingHeartRate"),
-                "hrv_zone": safe(raw["hrv"], "hrvSummary", "lastNightAvgIncreasedBaseline"),
+                "hrv_zone": safe(raw["hrv"], "hrvSummary", "status"),
                 "sleep_hrs": round((safe(raw["sleep"], "dailySleepDTO", "sleepTimeSeconds") or 0)/3600,2),
                 "sleep_score": safe(raw["sleep"], "dailySleepDTO", "sleepScores", "overall", "value"),
                 "sleep_rem_min": safe(raw["sleep"], "dailySleepDTO", "remSleepSeconds") // 60,
