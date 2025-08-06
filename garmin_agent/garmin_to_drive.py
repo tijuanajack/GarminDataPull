@@ -68,6 +68,8 @@ def main():
             for k, v in raw.items():
                 if isinstance(v, list):
                     raw[k] = v[0] if v else {}
+            # -----SPO HANDLER        
+            spo2_values = [d.get("spo2Value") for d in raw["spo2"].get("spo2Values", []) if d.get("spo2Value") not in (None, 0)]
 
             # --------- summary row (mirrors Collab logic) ----------
             ready_raw = raw["ready"] or {}
@@ -94,7 +96,6 @@ def main():
                 "fitness_age": safe(raw["fitage"], "fitnessAge"),
                 "intensity_min_mod": safe(raw["activity_stats"], "moderateIntensityMinutes"),
                 "intensity_min_vig": safe(raw["activity_stats"], "vigorousIntensityMinutes"),
-                spo2_values = [d.get("spo2Value") for d in raw["spo2"].get("spo2Values", []) if d.get("spo2Value") not in (None, 0)]
                 "spo2_avg": round(sum(spo2_values) / len(spo2_values), 1) if spo2_values else None,
 
 # ─── average respiration ───
