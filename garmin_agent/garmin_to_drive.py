@@ -88,6 +88,10 @@ def main():
                 "sleep_deep_min": safe(raw["sleep"], "dailySleepDTO", "deepSleepSeconds") // 60,
                 "sleep_light_min": safe(raw["sleep"], "dailySleepDTO", "lightSleepSeconds") // 60,
                 "sleep_wake_min": safe(raw["sleep"], "dailySleepDTO", "awakeSleepSeconds") // 60,
+                "spo2_lowest": safe(raw["spo2"], "lowestSpO2"),
+                "spo2_sleep_avg": safe(raw["spo2"], "avgSleepSpO2"),
+                "spo2_sleep_avg": safe(raw["spo2"], "avgSleepSpO2"),
+                "spo2_7d_avg": safe(raw["spo"], "lastSevenDaysAvgSpO2"),
                 "steps":     safe(raw["activity_stats"], "totalSteps"),
                 "stress_avg":  safe(raw["activity_stats"], "averageStressLevel"),
                 "stress_dur":  round((safe(raw["activity_stats"], "stressDuration") or 0)/3600,2),
@@ -99,7 +103,6 @@ def main():
                 "fitness_age": safe(raw["fitage"], "fitnessAge"),
                 "intensity_min_mod": safe(raw["activity_stats"], "moderateIntensityMinutes"),
                 "intensity_min_vig": safe(raw["activity_stats"], "vigorousIntensityMinutes"),
-                "spo2_avg": round(sum(spo2_values) / len(spo2_values), 1) if spo2_values else None,
 
 # ─── average respiration ───
 "respiration_avg": (
