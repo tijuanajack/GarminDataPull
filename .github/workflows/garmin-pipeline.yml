@@ -1,79 +1,63 @@
-name: Garmin Pipeline
+name: Daily Garmin Sync
 
 on:
   schedule:
-    # Runs daily at 11:30 UTC (06:30 America/Chicago)
-    - cron: "30 11 * * *"
+    # Run once daily at 7 AM Central (13:00 UTC during DST, 14:00 UTC during standard time)
+    - cron: '0 13 * * *'   # 07:00 CDT
+    - cron: '0 14 * * *'   # 07:00 CST
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 jobs:
-  run-garmin:
+  garmin:
     runs-on: ubuntu-latest
+    env:
+      GARMIN_EMAIL:    ${{ secrets.GARMIN_EMAIL }}
+      GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
+      GARMIN_MFA_CODE: ${{ secrets.GARMIN_MFA_CODE }}
 
     steps:
-      - name: Checkout
+      - name: 📥 Checkout private repo
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
-      - name: Set up Python
+      - name: 🐍 Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: '3.10'
 
-      - name: Install deps
+      - name: 📦 Install deps
         run: |
-          python -m pip install --upgrade pip
-          pip install -r garmin_agent/requirements.txt
+          python -m pip install --quiet --upgrade pip
+          pip install --quiet garminconnect pandas openai>=1.12.0
 
-      # Optional: restore garth cookie for non-interactive login
-      - name: Restore garth cookie
-        if: ${{ secrets.GARTH_COOKIE_B64 != '' }}
-        run: |
-          mkdir -p garmin_agent/data
-          echo "${GARTH_COOKIE_B64}" | base64 -d > garmin_agent/data/.garminconnect
-        env:
-          GARTH_COOKIE_B64: ${{ secrets.GARTH_COOKIE_B64 }}
+      - name: ▶️ Run Garmin daily summary
+        run: python garmin_agent/garmin_to_drive.py
 
-      - name: Run daily summary export
+      - name: ▶️ Run Garmin per-activity export (last 21 days)
         env:
-          GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
-          GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
-          GARMIN_MFA_CODE: ${{ secrets.GARMIN_MFA_CODE }}
-        run: |
-          cd garmin_agent
-          python garmin_to_drive.py
-          ls -l
-
-      - name: Run per-activity export (last 21 days by default)
-        env:
-          GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
-          GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
           DAYS_ACTIVITIES: "21"
-        run: |
-          cd garmin_agent
-          python activity_export.py
-          ls -l
+        run: python garmin_agent/activity_export.py
 
-      - name: Move outputs to data folder
+      - name: 📝 Commit CSVs to private repo
+        env:
+          TOKEN: ${{ secrets.PRIVATE_REPO_PUSH_TOKEN }}
         run: |
-          mkdir -p data
-          # daily summary produces garmin_summary_YYYY-MM-DD.csv and latest_summary.csv
-          if [ -f garmin_agent/garmin_summary_*.csv ]; then
-            mv garmin_agent/garmin_summary_*.csv data/ || true
-          fi
-          if [ -f garmin_agent/latest_summary.csv ]; then
-            mv garmin_agent/latest_summary.csv data/
-          fi
-          if [ -f garmin_agent/latest_activity_summary.csv ]; then
-            mv garmin_agent/latest_activity_summary.csv data/
-          fi
-          ls -l data
+          git config user.name  "github-actions"
+          git config user.email "actions@github.com"
+          git add garmin_agent/data/*.csv
+          git commit -m "🔄 update Garmin CSVs $(date +'%Y-%m-%d')" || echo "no changes"
+          git push https://x-access-token:${TOKEN}@github.com/${{ github.repository }}.git HEAD:main
 
-      - name: Commit and push
-        uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          commit_message: "Update Garmin summaries [skip ci]"
-          file_pattern: |
-            data/*.csv
+      - name: 🚀 Push latest_summary.csv to public repo
+        env:
+          TOKEN: ${{ secrets.PUBLIC_REPO_PUSH_TOKEN }}
+        run: |
+          git clone https://x-access-token:${TOKEN}@github.com/tijuanajack/garmin-health-data.git public
+          cp garmin_agent/data/latest_summary.csv public/
+          cd public
+          git config user.name  "github-actions"
+          git config user.email "actions@github.com"
+          git add latest_summary.csv
+          git commit -m "📊 update $(date +'%Y-%m-%d')" || echo "no changes"
+          git push
