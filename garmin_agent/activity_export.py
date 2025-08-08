@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from garminconnect import Garmin
 
 # ---------- config ----------
-DAYS = int(os.getenv("DAYS_ACTIVITIES", "21"))  # how many days of activities to export
+DAYS = int(os.getenv("DAYS_ACTIVITIES", "30"))  # how many days of activities to export
 EMAIL = os.getenv("GARMIN_EMAIL")
 PASSWORD = os.getenv("GARMIN_PASSWORD")
 
