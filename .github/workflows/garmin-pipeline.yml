@@ -1,4 +1,4 @@
-name: Daily Garmin Sync
+name: Daily Activities Garmin Sync
 
 on:
   schedule:
