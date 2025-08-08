@@ -1,0 +1,79 @@
+name: Garmin Pipeline
+
+on:
+  schedule:
+    # Runs daily at 11:30 UTC (06:30 America/Chicago)
+    - cron: "30 11 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  run-garmin:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r garmin_agent/requirements.txt
+
+      # Optional: restore garth cookie for non-interactive login
+      - name: Restore garth cookie
+        if: ${{ secrets.GARTH_COOKIE_B64 != '' }}
+        run: |
+          mkdir -p garmin_agent/data
+          echo "${GARTH_COOKIE_B64}" | base64 -d > garmin_agent/data/.garminconnect
+        env:
+          GARTH_COOKIE_B64: ${{ secrets.GARTH_COOKIE_B64 }}
+
+      - name: Run daily summary export
+        env:
+          GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
+          GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
+          GARMIN_MFA_CODE: ${{ secrets.GARMIN_MFA_CODE }}
+        run: |
+          cd garmin_agent
+          python garmin_to_drive.py
+          ls -l
+
+      - name: Run per-activity export (last 21 days by default)
+        env:
+          GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
+          GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
+          DAYS_ACTIVITIES: "21"
+        run: |
+          cd garmin_agent
+          python activity_export.py
+          ls -l
+
+      - name: Move outputs to data folder
+        run: |
+          mkdir -p data
+          # daily summary produces garmin_summary_YYYY-MM-DD.csv and latest_summary.csv
+          if [ -f garmin_agent/garmin_summary_*.csv ]; then
+            mv garmin_agent/garmin_summary_*.csv data/ || true
+          fi
+          if [ -f garmin_agent/latest_summary.csv ]; then
+            mv garmin_agent/latest_summary.csv data/
+          fi
+          if [ -f garmin_agent/latest_activity_summary.csv ]; then
+            mv garmin_agent/latest_activity_summary.csv data/
+          fi
+          ls -l data
+
+      - name: Commit and push
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "Update Garmin summaries [skip ci]"
+          file_pattern: |
+            data/*.csv
