@@ -1,23 +1,52 @@
-import os
-import json
-import pandas as pd
-from datetime import datetime, timedelta, timezone
+# garmin_agent/activity_export.py
 from garminconnect import Garmin
+from pathlib import Path
+from datetime import datetime, timedelta, timezone
+import pandas as pd, json, os
 
-# ---------- config ----------
-DAYS = int(os.getenv("DAYS_ACTIVITIES", "30"))  # how many days of activities to export
-EMAIL = os.getenv("GARMIN_EMAIL")
-PASSWORD = os.getenv("GARMIN_PASSWORD")
-
-# ---------- utils ----------
-def safe(d, *keys, default=None):
-    cur = d
+# ---------- helpers ----------
+def as_dict(x):       return x if isinstance(x, dict) else {}
+def first(x):         return x[0] if isinstance(x, list) and x else {}
+def safe(obj, *keys, default=None):
+    cur = obj
     for k in keys:
-        if isinstance(cur, dict) and k in cur:
-            cur = cur[k]
+        if isinstance(cur, dict):
+            cur = cur.get(k, {})
         else:
             return default
-    return cur
+    return cur if cur not in ({}, None) else default
+
+def login(email, pwd, mfa=None):
+    store = Path(__file__).parent / "data" / ".garminconnect"
+    try:
+        g = Garmin(); g.login(str(store)); return g
+    except Exception:
+        g = Garmin(email=email, password=pwd, is_cn=False, return_on_mfa=True)
+        s1, s2 = g.login()
+        if s1 == "needs_mfa":
+            if not mfa: raise RuntimeError("MFA required")
+            g.resume_login(s2, mfa)
+        g.garth.dump(str(store)); return g
+
+def iso_to_dt(iso_str):
+    if not iso_str:
+        return None
+    # Garmin returns "YYYY-MM-DDTHH:MM:SS.s" maybe with Z
+    iso_str = iso_str.replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(iso_str)
+    except Exception:
+        return None
+
+def pace_sec_per_km(avg_speed_mps):
+    if not avg_speed_mps or avg_speed_mps <= 0:
+        return None
+    return 1000.0 / avg_speed_mps
+
+def pace_sec_per_mile(avg_speed_mps):
+    if not avg_speed_mps or avg_speed_mps <= 0:
+        return None
+    return 1609.344 / avg_speed_mps
 
 def to_json(obj):
     try:
@@ -25,70 +54,54 @@ def to_json(obj):
     except Exception:
         return None
 
-def iso_to_date(iso):
-    if not iso:
-        return None
-    # Garmin returns "2025-08-06T10:50:00.0" or "...Z"
-    iso = iso.replace("Z", "+00:00")
-    try:
-        return datetime.fromisoformat(iso)
-    except Exception:
-        return None
-
-def pace_per_km(avg_speed_mps):
-    if not avg_speed_mps or avg_speed_mps <= 0:
-        return None
-    return 1000.0 / avg_speed_mps  # seconds per km
-
-def pace_per_mile(avg_speed_mps):
-    if not avg_speed_mps or avg_speed_mps <= 0:
-        return None
-    return 1609.344 / avg_speed_mps  # seconds per mile
-
 # ---------- main ----------
 def main():
-    if not EMAIL or not PASSWORD:
-        raise RuntimeError("Set GARMIN_EMAIL and GARMIN_PASSWORD env vars.")
+    email = os.environ["GARMIN_EMAIL"]
+    pwd   = os.environ["GARMIN_PASSWORD"]
+    mfa   = os.getenv("GARMIN_MFA_CODE")
+    g     = login(email, pwd, mfa)
 
-    g = Garmin(EMAIL, PASSWORD)
-    g.login()
+    data_dir = Path(__file__).parent / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
 
+    days = int(os.getenv("DAYS_ACTIVITIES", "30"))
     today = datetime.now(timezone.utc).date()
-    start_date = today - timedelta(days=DAYS)
+    start_date = today - timedelta(days=days)
 
-    # pull activities with pagination until we pass window
-    page_start = 0
-    page_size = 200  # big page to reduce calls
     rows = []
+    page = 0
+    page_size = 200
 
     while True:
-        acts = g.get_activities(page_start, page_size) or []
+        try:
+            acts = g.get_activities(page, page_size) or []
+        except Exception as e:
+            print(f"⚠️ get_activities page {page}: {e}")
+            break
+
         if not acts:
             break
 
+        stop = False
         for a in acts:
             start_gmt = a.get("startTimeGMT")
-            dt = iso_to_date(start_gmt)
-            if not dt:
+            start_dt = iso_to_dt(start_gmt)
+            if not start_dt:
                 continue
-            act_date = dt.date()
+            act_date = start_dt.date()
             if act_date < start_date:
-                # since list is reverse chronological, we can stop outer loops
-                acts = []
+                stop = True
                 break
 
             act_id = a.get("activityId")
-            type_key = safe(a, "activityType", "typeKey", default="unknown")
+            type_key = safe(a, "activityType", "typeKey")
 
-            # filter to your primaries; still include everything but enrich for these
-            # primaries: running, trail_running, swimming, hiit/strength, hiking, walking
-            # Garmin type keys vary; we branch on the ones you care about
-            # fetch details and aux endpoints
+            # pull details with guards
             try:
                 details = g.get_activity_details(act_id) or {}
             except Exception:
                 details = {}
-            summary = safe(details, "summaryDTO", default={})
+            summary = as_dict(details.get("summaryDTO", {}))
 
             try:
                 weather = g.get_activity_weather(act_id) or {}
@@ -110,9 +123,8 @@ def main():
                 split_summ = g.get_activity_split_summaries(act_id) or {}
             except Exception:
                 split_summ = {}
-            laps = safe(details, "lapDTOs", default=[])
+            laps = details.get("lapDTOs", [])
 
-            # base fields common to all
             avg_speed = summary.get("averageSpeed")
             base = {
                 "date": act_date.isoformat(),
@@ -126,8 +138,8 @@ def main():
                 "moving_sec": summary.get("movingDuration"),
                 "distance_m": summary.get("distance"),
                 "avg_speed_mps": avg_speed,
-                "avg_pace_sec_per_km": pace_per_km(avg_speed),
-                "avg_pace_sec_per_mile": pace_per_mile(avg_speed),
+                "avg_pace_sec_per_km": pace_sec_per_km(avg_speed),
+                "avg_pace_sec_per_mile": pace_sec_per_mile(avg_speed),
 
                 "avg_hr": summary.get("averageHR"),
                 "max_hr": summary.get("maxHR"),
@@ -140,47 +152,42 @@ def main():
                 "elev_gain_m": summary.get("elevationGain"),
                 "elev_loss_m": summary.get("elevationLoss"),
 
-                "weather_temp_c": safe(weather, "temperature"),
-                "weather_humidity": safe(weather, "humidity"),
-                "weather_condition": safe(weather, "condition"),
-
                 "device_name": safe(details, "deviceMetaDataDTO", "deviceName"),
+                "weather_temp_c": weather.get("temperature"),
+                "weather_humidity": weather.get("humidity"),
+                "weather_condition": weather.get("condition"),
                 "gear": to_json(gear) if gear else None,
 
-                "rpe": safe(evaln, "perceivedExertion"),
-                "perceived_feel": safe(evaln, "perceivedFeeling"),
+                "rpe": evaln.get("perceivedExertion"),
+                "perceived_feel": evaln.get("perceivedFeeling"),
 
                 "splits_json": to_json(splits or split_summ),
                 "laps_json": to_json(laps),
                 "notes": a.get("notes"),
             }
 
-            # type specific enrichments
             extra = {}
-            # running family
+            # running family including trail and treadmill
             if type_key in ("running", "trail_running", "treadmill_running"):
                 extra.update({
                     "cadence_avg": summary.get("averageRunCadence") or summary.get("averageCadence"),
                     "stride_len_m": summary.get("strideLength"),
                     "avg_power_w": summary.get("averagePower"),
-                    "terrain_type": "trail" if type_key == "trail_running" else "road/treadmill",
+                    "terrain_type": "trail" if type_key == "trail_running" else "road_treadmill",
                 })
-
             # walking
             if type_key == "walking":
                 extra.update({
                     "cadence_avg": summary.get("averageCadence"),
                     "steps": summary.get("steps"),
                 })
-
             # hiking
             if type_key == "hiking":
                 extra.update({
                     "cadence_avg": summary.get("averageCadence"),
                     "max_elev_m": summary.get("maxElevation"),
                 })
-
-            # hiit / strength / cross
+            # hiit or strength or cross training
             if type_key in ("hiit", "indoor_cardio", "cross_training", "strength_training"):
                 strength_sets = []
                 if type_key == "strength_training":
@@ -189,37 +196,36 @@ def main():
                     except Exception:
                         strength_sets = []
                 extra.update({
-                    "sets_count": safe(summary, "numberOfSets"),
-                    "total_reps": safe(summary, "totalReps"),
-                    "total_weight_kg": safe(summary, "totalWeightLifted"),
+                    "sets_count": summary.get("numberOfSets"),
+                    "total_reps": summary.get("totalReps"),
+                    "total_weight_kg": summary.get("totalWeightLifted"),
                     "strength_sets_json": to_json(strength_sets) if strength_sets else None,
                 })
-
-            # swimming (pool or open water)
+            # swimming
             if type_key in ("pool_swimming", "open_water_swimming", "swimming"):
                 extra.update({
                     "pool_length_m": summary.get("poolLength"),
                     "total_lengths": summary.get("totalNumberOfLengths"),
                     "total_strokes": summary.get("totalNumberOfStrokes"),
                     "swolf_avg": summary.get("avgSwolf"),
-                    "stroke_counts_json": to_json(safe(details, "swimExerciseDTOs", default=[])),
+                    "stroke_counts_json": to_json(details.get("swimExerciseDTOs", [])),
                     "pace_sec_per_100m": (100.0 / avg_speed) if avg_speed else None,
                 })
 
             row = {**base, **extra}
             rows.append(row)
 
-        if not acts:
+        if stop:
             break
-
-        page_start += page_size
+        page += page_size
 
     if not rows:
         raise RuntimeError("No recent activities found. Increase DAYS_ACTIVITIES or check Garmin sync.")
 
     df = pd.DataFrame(rows).sort_values(["date", "start_local", "activity_id"])
-    df.to_csv("latest_activity_summary.csv", index=False)
-    print(f"Saved latest_activity_summary.csv with {len(df)} activities over the last {DAYS} days.")
+    out = data_dir / "latest_activity_summary.csv"
+    df.to_csv(out, index=False)
+    print(f"✅ saved {out.name} with {len(df)} activities over the last {days} days.")
 
 if __name__ == "__main__":
     main()
