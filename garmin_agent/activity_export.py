@@ -1,25 +1,14 @@
 
-# garmin_agent/activity_export.py  v2
-# Focus: reliable population of core metrics for run, trail_run, swim, hiit/strength, hike, walk
-# Strategy: use get_activities_by_date for the window, then enrich with details; fall back to list summary when details missing
+# garmin_agent/activity_export.py  v3 — aligned to your payloads
+# Primary source: get_activities_by_date() list objects (your account does NOT include summaryDTO there)
+# Avoids depending on get_activity_details(); uses list fields + splitSummaries directly.
 
 from garminconnect import Garmin
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
-import pandas as pd, json, os, time
+import pandas as pd, json, os
 
 # ---------- helpers ----------
-def as_dict(x):       return x if isinstance(x, dict) else {}
-def first(x):         return x[0] if isinstance(x, list) and x else {}
-def safe(d, *keys, default=None):
-    cur = d
-    for k in keys:
-        if isinstance(cur, dict) and k in cur:
-            cur = cur[k]
-        else:
-            return default
-    return cur
-
 def login(email, pwd, mfa=None):
     store = Path(__file__).parent / "data" / ".garminconnect"
     try:
@@ -36,66 +25,48 @@ def iso_to_dt(s):
     if not s: return None
     s = s.replace("Z", "+00:00")
     try: return datetime.fromisoformat(s)
-    except: return None
+    except: 
+        try: return datetime.strptime(s, "%Y-%m-%d %H:%M:%S")
+        except: return None
 
-def pace_per_km(avg_speed_mps):
+def norm_type(type_key):
+    if not type_key: return None
+    t = type_key.lower()
+    mapping = {
+        "running": "running",
+        "trail_running": "trail_running",
+        "treadmill_running": "treadmill_running",
+        "walking": "walking",
+        "hiking": "hiking",
+        "hiit": "hiit",
+        "indoor_cardio": "hiit",
+        "cross_training": "hiit",
+        "strength_training": "strength_training",
+        "pool_swimming": "swimming",
+        "open_water_swimming": "swimming",
+        "swimming": "swimming",
+    }
+    return mapping.get(t, t)
+
+def pace_secs_per_km(avg_speed_mps):
     return (1000.0/avg_speed_mps) if avg_speed_mps and avg_speed_mps>0 else None
 
-def pace_per_mile(avg_speed_mps):
+def pace_secs_per_mile(avg_speed_mps):
     return (1609.344/avg_speed_mps) if avg_speed_mps and avg_speed_mps>0 else None
 
-def compact_laps_from_details(details: dict):
-    # prefer lapDTOs from details if present
-    laps = as_dict(details).get("lapDTOs") or []
+def compact_splits_from_list(split_summaries):
     out = []
-    for i, lap in enumerate(laps, 1):
-        sd = as_dict(lap.get("summaryDTO", {}))
-        out.append({
-            "i": i,
-            "dist_m": sd.get("distance"),
-            "dur_s": sd.get("duration"),
-            "avg_spd": sd.get("averageSpeed"),
-            "avg_hr": sd.get("averageHR"),
-            "gain_m": sd.get("elevationGain"),
-        })
+    if isinstance(split_summaries, list):
+        for s in split_summaries:
+            out.append({
+                "type": s.get("splitType"),
+                "n": s.get("noOfSplits"),
+                "dur_s": s.get("duration"),
+                "dist": s.get("distance"),
+                "avg_spd": s.get("averageSpeed"),
+                "ascent": s.get("totalAscent"),
+            })
     return json.dumps(out, separators=(",", ":"), ensure_ascii=False) if out else None
-
-def compact_splits(api, act_id):
-    # fall back to split summaries to reduce payload
-    try:
-        ss = api.get_activity_split_summaries(act_id) or {}
-    except Exception:
-        ss = {}
-    laps = as_dict(ss).get("lapDTOs") or []
-    out = []
-    for i, lap in enumerate(laps, 1):
-        sd = as_dict(lap.get("summaryDTO", {}))
-        out.append({
-            "i": i,
-            "dist_m": sd.get("distance"),
-            "dur_s": sd.get("duration"),
-            "avg_spd": sd.get("averageSpeed"),
-            "avg_hr": sd.get("averageHR"),
-            "gain_m": sd.get("elevationGain"),
-        })
-    return json.dumps(out, separators=(",", ":"), ensure_ascii=False) if out else None
-
-def normalize_type(type_key: str):
-    if not type_key:
-        return None
-    t = type_key.lower()
-    # map common variants
-    if t in ("running", "trail_running", "treadmill_running"):
-        return t
-    if t in ("walking",):
-        return "walking"
-    if t in ("hiking",):
-        return "hiking"
-    if t in ("hiit", "indoor_cardio", "cross_training", "strength_training"):
-        return t
-    if t in ("pool_swimming", "open_water_swimming", "swimming"):
-        return t
-    return t
 
 # ---------- main ----------
 def main():
@@ -111,150 +82,111 @@ def main():
     today = datetime.now(timezone.utc).date()
     start_date = today - timedelta(days=days)
 
-    # pull activity list by date window to ensure we only request details we need
-    try:
-        act_list = g.get_activities_by_date(start_date.isoformat(), today.isoformat(), None) or []
-    except Exception:
-        # fallback to pagination
-        act_list = []
-        page = 0; size = 200
-        while True:
-            batch = g.get_activities(page, size) or []
-            if not batch: break
-            act_list += batch
-            page += size
-            # stop early if older than window
-            last_dt = iso_to_dt(batch[-1].get("startTimeGMT"))
-            if last_dt and last_dt.date() < start_date:
-                break
+    # Pull list in one shot
+    acts = g.get_activities_by_date(start_date.isoformat(), today.isoformat(), None) or []
 
     rows = []
-    for a in act_list:
-        start_gmt = a.get("startTimeGMT")
-        dt = iso_to_dt(start_gmt)
-        if not dt: 
-            continue
-        act_date = dt.date()
-        if act_date < start_date:
-            continue
+    for a in acts:
+        # time handling
+        start_local = a.get("startTimeLocal")
+        dt = iso_to_dt(a.get("startTimeGMT") or start_local)
+        act_date = (dt.date() if dt else None)
 
-        act_id = a.get("activityId")
-        type_key_raw = safe(a, "activityType", "typeKey")
-        type_key = normalize_type(type_key_raw)
+        tkey = norm_type(a.get("activityType", {}).get("typeKey"))
+        avg_spd = a.get("averageSpeed")
 
-        # details often missing fields, so fallback to list summary
-        try:
-            details = g.get_activity_details(act_id) or {}
-        except Exception:
-            details = {}
-        det_summary = as_dict(details.get("summaryDTO", {}))
-        list_summary = as_dict(a.get("summaryDTO", {}))
-        summary = det_summary if det_summary else list_summary
-
-        # aux endpoints best effort
-        try:   weather = g.get_activity_weather(act_id) or {}
-        except Exception: weather = {}
-        try:   gear = g.get_activity_gear(act_id) or {}
-        except Exception: gear = {}
-        try:   evaln = g.get_activity_evaluation(act_id) or {}
-        except Exception: evaln = {}
-
-        # compact laps and splits
-        laps_json = compact_laps_from_details(details)
-        if laps_json is None:
-            laps_json = compact_splits(g, act_id)
-
-        avg_speed = summary.get("averageSpeed")
         base = {
-            "date": act_date.isoformat(),
-            "activity_id": act_id,
+            "date": act_date.isoformat() if act_date else (start_local[:10] if start_local else None),
+            "activity_id": a.get("activityId"),
             "name": a.get("activityName"),
-            "type_key": type_key or type_key_raw,
-            "start_local": a.get("startTimeLocal"),
-            "start_gmt": start_gmt,
+            "type_key": tkey,
+            "start_local": start_local,
+            "start_gmt": a.get("startTimeGMT"),
+            "location": a.get("locationName"),
+            "polyline": bool(a.get("hasPolyline")),
 
-            "elapsed_sec": summary.get("duration"),
-            "moving_sec": summary.get("movingDuration"),
-            "distance_m": summary.get("distance"),
-            "avg_speed_mps": avg_speed,
-            "avg_pace_sec_per_km": pace_per_km(avg_speed),
-            "avg_pace_sec_per_mile": pace_per_mile(avg_speed),
-
-            "avg_hr": summary.get("averageHR"),
-            "max_hr": summary.get("maxHR"),
-            "calories": summary.get("calories"),
-
-            "training_effect": summary.get("trainingEffect"),
-            "aerobic_te": summary.get("aerobicTrainingEffect"),
-            "anaerobic_te": summary.get("anaerobicTrainingEffect"),
-
-            "elev_gain_m": summary.get("elevationGain"),
-            "elev_loss_m": summary.get("elevationLoss"),
-
-            "device_name": safe(details, "deviceMetaDataDTO", "deviceName") or safe(a, "deviceMetaDataDTO", "deviceName"),
-            "weather_temp_c": weather.get("temperature"),
-            "weather_humidity": weather.get("humidity"),
-            "weather_condition": weather.get("condition"),
-            "gear": json.dumps(gear, separators=(",", ":"), ensure_ascii=False) if gear else None,
-
-            "rpe": evaln.get("perceivedExertion"),
-            "perceived_feel": evaln.get("perceivedFeeling"),
-
-            "splits_json": laps_json,
-            "notes": a.get("notes"),
+            # Core metrics from list object
+            "distance_m": a.get("distance"),
+            "elapsed_sec": a.get("elapsedDuration"),
+            "moving_sec": a.get("movingDuration"),
+            "duration_sec": a.get("duration"),
+            "avg_speed_mps": avg_spd,
+            "avg_pace_sec_per_km": pace_secs_per_km(avg_spd),
+            "avg_pace_sec_per_mile": pace_secs_per_mile(avg_spd),
+            "avg_hr": a.get("averageHR"),
+            "max_hr": a.get("maxHR"),
+            "calories": a.get("calories"),
+            "steps": a.get("steps"),
+            "elev_gain_m": a.get("elevationGain"),
+            "elev_loss_m": a.get("elevationLoss"),
+            "training_effect": a.get("aerobicTrainingEffect"),
+            "anaerobic_te": a.get("anaerobicTrainingEffect"),
+            "training_load": a.get("activityTrainingLoad"),
+            "vo2max": a.get("vO2MaxValue"),
+            "body_battery_delta": a.get("differenceBodyBattery"),
+            "intensity_min_mod": a.get("moderateIntensityMinutes"),
+            "intensity_min_vig": a.get("vigorousIntensityMinutes"),
         }
 
+        # Enrich per type from list-level fields
         extra = {}
-        if type_key in ("running", "trail_running", "treadmill_running"):
+
+        if tkey in ("running","trail_running","treadmill_running"):
             extra.update({
-                "cadence_avg": summary.get("averageRunCadence") or summary.get("averageCadence"),
-                "stride_len_m": summary.get("strideLength"),
-                "avg_power_w": summary.get("averagePower"),
-                "terrain_type": "trail" if type_key == "trail_running" else "road_treadmill",
-            })
-        if type_key == "walking":
-            extra.update({
-                "cadence_avg": summary.get("averageCadence"),
-                "steps": summary.get("steps") or safe(list_summary, "steps"),
-            })
-        if type_key == "hiking":
-            extra.update({
-                "cadence_avg": summary.get("averageCadence"),
-                "max_elev_m": summary.get("maxElevation"),
-            })
-        if type_key in ("hiit", "indoor_cardio", "cross_training", "strength_training"):
-            strength_sets = []
-            if type_key == "strength_training":
-                try:
-                    strength_sets = g.get_activity_exercise_sets(act_id) or []
-                except Exception:
-                    strength_sets = []
-            extra.update({
-                "sets_count": summary.get("numberOfSets"),
-                "total_reps": summary.get("totalReps"),
-                "total_weight_kg": summary.get("totalWeightLifted"),
-                "strength_sets_json": json.dumps(strength_sets, separators=(",", ":"), ensure_ascii=False) if strength_sets else None,
-            })
-        if type_key in ("pool_swimming", "open_water_swimming", "swimming"):
-            extra.update({
-                "pool_length_m": summary.get("poolLength"),
-                "total_lengths": summary.get("totalNumberOfLengths"),
-                "total_strokes": summary.get("totalNumberOfStrokes"),
-                "swolf_avg": summary.get("avgSwolf"),
-                "stroke_counts_json": json.dumps(details.get("swimExerciseDTOs", []), separators=(",", ":"), ensure_ascii=False) if details.get("swimExerciseDTOs") else None,
-                "pace_sec_per_100m": (100.0/avg_speed) if avg_speed else None,
+                "run_cadence_spm": a.get("averageRunningCadenceInStepsPerMinute") or a.get("maxRunningCadenceInStepsPerMinute"),
+                "stride_len_cm": a.get("avgStrideLength"),   # list has cm-ish value named avgStrideLength
+                "avg_power_w": a.get("avgPower"),
+                "norm_power_w": a.get("normPower"),
+                "vertical_osc_mm": a.get("avgVerticalOscillation"),
+                "ground_contact_ms": a.get("avgGroundContactTime"),
+                "vertical_ratio": a.get("avgVerticalRatio"),
+                "terrain": "trail" if tkey=="trail_running" else "road/treadmill",
             })
 
-        row = {**base, **extra}
-        rows.append(row)
+        if tkey=="walking":
+            extra.update({
+                "walk_cadence_spm": a.get("averageRunningCadenceInStepsPerMinute") or a.get("maxRunningCadenceInStepsPerMinute"),
+                "stride_len_cm": a.get("avgStrideLength"),
+            })
+
+        if tkey=="hiking":
+            extra.update({
+                "hike_cadence_spm": a.get("averageRunningCadenceInStepsPerMinute"),
+                "max_elev_m": a.get("maxElevation"),
+            })
+
+        if tkey in ("hiit","strength_training","cross_training"):
+            extra.update({
+                "total_sets": a.get("totalSets"),
+                "active_sets": a.get("activeSets"),
+                "total_reps": a.get("totalReps"),
+            })
+
+        if tkey=="swimming":
+            # not present in your recent data but keep placeholders
+            extra.update({
+                "pool_length_m": a.get("poolLength"),
+                "total_lengths": a.get("totalNumberOfLengths"),
+                "total_strokes": a.get("totalNumberOfStrokes"),
+                "swolf_avg": a.get("avgSwolf"),
+            })
+
+        # Splits are provided inline on list items
+        base["splits_json"] = compact_splits_from_list(a.get("splitSummaries"))
+
+        rows.append({**base, **extra})
 
     if not rows:
-        raise RuntimeError("No activities in range. Check window or Garmin sync.")
+        raise RuntimeError("No activities found in window — check DAYS_ACTIVITIES or Garmin sync.")
 
-    df = pd.DataFrame(rows).sort_values(["date", "start_local", "activity_id"])
-    out = Path(__file__).parent / "data" / "latest_activity_summary.csv"
+    df = pd.DataFrame(rows).sort_values(["date","start_local","activity_id"])
+    out = data_dir / "latest_activity_summary.csv"
     df.to_csv(out, index=False)
-    print(f"✅ saved {out.name} with {len(df)} activities over the last {days} days.")
+    print(f"✅ saved {out.name} with {len(df)} rows")
+    # Also save a dated archive
+    dated = data_dir / f"activities_{today.isoformat()}.csv"
+    df.to_csv(dated, index=False)
+    print(f"🗃️ archived as {dated.name}")
 
 if __name__ == "__main__":
     main()
