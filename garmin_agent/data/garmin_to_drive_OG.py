@@ -68,11 +68,6 @@ def main():
             for k, v in raw.items():
                 if isinstance(v, list):
                     raw[k] = v[0] if v else {}
-            # -----SPO HANDLER        
-            spo2_values = [d.get("spo2Value") for d in raw["spo2"].get("spo2Values", []) if d.get("spo2Value") not in (None, 0)]
-
-            #----- PRINT VALUES For Troubleshootnig
-            #print(json.dumps(raw["spo2"], indent=2))
 
             # --------- summary row (mirrors Collab logic) ----------
             ready_raw = raw["ready"] or {}
@@ -81,17 +76,7 @@ def main():
                 "readiness": ready_raw.get("trainingReadinessScore") or ready_raw.get("score"),
                 "hrv":       safe(raw["hrv"], "hrvSummary", "lastNightAvg"),
                 "rhr":       safe(raw["heart"], "restingHeartRate"),
-                "hrv_zone": safe(raw["hrv"], "hrvSummary", "status"),
                 "sleep_hrs": round((safe(raw["sleep"], "dailySleepDTO", "sleepTimeSeconds") or 0)/3600,2),
-                "sleep_score": safe(raw["sleep"], "dailySleepDTO", "sleepScores", "overall", "value"),
-                "sleep_rem_min": safe(raw["sleep"], "dailySleepDTO", "remSleepSeconds") // 60,
-                "sleep_deep_min": safe(raw["sleep"], "dailySleepDTO", "deepSleepSeconds") // 60,
-                "sleep_light_min": safe(raw["sleep"], "dailySleepDTO", "lightSleepSeconds") // 60,
-                "sleep_wake_min": safe(raw["sleep"], "dailySleepDTO", "awakeSleepSeconds") // 60,
-                "spo2_lowest": safe(raw["spo2"], "lowestSpO2"),
-                "spo2_sleep_avg": safe(raw["spo2"], "avgSleepSpO2"),
-                "spo2_sleep_avg": safe(raw["spo2"], "avgSleepSpO2"),
-                "spo2_7d_avg": safe(raw["spo2"], "lastSevenDaysAvgSpO2"),
                 "steps":     safe(raw["activity_stats"], "totalSteps"),
                 "stress_avg":  safe(raw["activity_stats"], "averageStressLevel"),
                 "stress_dur":  round((safe(raw["activity_stats"], "stressDuration") or 0)/3600,2),
@@ -101,10 +86,7 @@ def main():
                 "bb_low":    safe(raw["activity_stats"], "bodyBatteryLowestValue"),
                 "vo2max":    safe(raw["status"], "mostRecentVO2Max", "generic", "vo2MaxValue"),
                 "fitness_age": safe(raw["fitage"], "fitnessAge"),
-                "intensity_min_mod": safe(raw["activity_stats"], "moderateIntensityMinutes"),
-                "intensity_min_vig": safe(raw["activity_stats"], "vigorousIntensityMinutes"),
-
-# ─── average respiration ───
+               # ─── average respiration ───
 "respiration_avg": (
     safe(raw["sleep"], "dailySleepDTO", "averageRespirationValue")
     or safe(first(raw["sleep"].get("dailySleepDTO", {})), "averageRespirationValue")

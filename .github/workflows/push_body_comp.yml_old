@@ -1,0 +1,60 @@
+name: Push Body-Comp to Garmin
+
+on:
+  workflow_dispatch:
+    inputs:
+      BW_LBS: {description: "Weight (lbs)", required: true}
+      MUSCLE_ATH_LBS: {description: "Athlete Muscle Mass (lbs)", required: true}
+      SKELETAL_A_PCT: {description: "Athlete Skeletal %", required: true}
+      BONE_ATH_LBS: {description: "Athlete Bone Mass (lbs)", required: true}
+      VISFAT_ATH: {description: "Athlete Visceral Fat", required: true}
+      FAT_ATH_PCT: {description: "Athlete Body-Fat %", required: true}
+      HYD_ATH_PCT: {description: "Athlete Hydration %", required: true}
+      BMI_ATH: {description: "Athlete BMI", required: true}
+      BMR_ATH: {description: "Athlete BMR (kcal)", required: true}
+      MAGE_ATH: {description: "Athlete Metabolic Age", required: true}
+
+      MUSCLE_STD_LBS: {description: "Std Muscle Mass (lbs)", required: true}
+      SKELETAL_S_PCT: {description: "Std Skeletal %", required: true}
+      BONE_STD_LBS: {description: "Std Bone Mass (lbs)", required: true}
+      VISFAT_STD: {description: "Std Visceral Fat", required: true}
+      FAT_STD_PCT: {description: "Std Body-Fat %", required: true}
+      HYD_STD_PCT: {description: "Std Hydration %", required: true}
+      BMI_STD: {description: "Std BMI", required: true}
+      BMR_STD: {description: "Std BMR (kcal)", required: true}
+      MAGE_STD: {description: "Std Metabolic Age", required: true}
+
+jobs:
+  push-body:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: 📦 Install deps
+      run: |
+        python -m pip install --quiet --upgrade pip
+        pip install --quiet garminconnect
+    - name: 🚀 Push body composition
+      env:
+        GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
+        GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
+        GARMIN_MFA_CODE: ${{ secrets.GARMIN_MFA_CODE }}
+        BW_LBS: ${{ inputs.BW_LBS }}
+        MUSCLE_ATH_LBS: ${{ inputs.MUSCLE_ATH_LBS }}
+        SKELETAL_A_PCT: ${{ inputs.SKELETAL_A_PCT }}
+        BONE_ATH_LBS: ${{ inputs.BONE_ATH_LBS }}
+        VISFAT_ATH: ${{ inputs.VISFAT_ATH }}
+        FAT_ATH_PCT: ${{ inputs.FAT_ATH_PCT }}
+        HYD_ATH_PCT: ${{ inputs.HYD_ATH_PCT }}
+        BMI_ATH: ${{ inputs.BMI_ATH }}
+        BMR_ATH: ${{ inputs.BMR_ATH }}
+        MAGE_ATH: ${{ inputs.MAGE_ATH }}
+        MUSCLE_STD_LBS: ${{ inputs.MUSCLE_STD_LBS }}
+        SKELETAL_S_PCT: ${{ inputs.SKELETAL_S_PCT }}
+        BONE_STD_LBS: ${{ inputs.BONE_STD_LBS }}
+        VISFAT_STD: ${{ inputs.VISFAT_STD }}
+        FAT_STD_PCT: ${{ inputs.FAT_STD_PCT }}
+        HYD_STD_PCT: ${{ inputs.HYD_STD_PCT }}
+        BMI_STD: ${{ inputs.BMI_STD }}
+        BMR_STD: ${{ inputs.BMR_STD }}
+        MAGE_STD: ${{ inputs.MAGE_STD }}
+      run: python garmin_agent/push_body_comp.py
