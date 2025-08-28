@@ -11,8 +11,9 @@ jobs:
   pull:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        profile: [ "TJ-Ath", "TJ-Standard" ]
+        profile: [ "TJ-Ath", "TJ-Standard" ]   # update if logs show different names
     steps:
       - uses: actions/checkout@v4
 
@@ -54,9 +55,18 @@ jobs:
         working-directory: rgs
         run: ./publish/rgs auth renpho --u "${{ secrets.RENPHO_EMAIL }}" --pw "${{ secrets.RENPHO_PASSWORD }}"
 
+      # Preflight: list profiles in logs. Keeps it read-only.
+      - name: Discover Renpho profiles (logs only)
+        working-directory: rgs
+        continue-on-error: true
+        run: |
+          ./publish/rgs sync \
+            --gu "placeholder" --gpw "placeholder" \
+            --ru "${{ secrets.RENPHO_EMAIL }}" --rpw "${{ secrets.RENPHO_PASSWORD }}" \
+            --dry-run || true
+
       # Create FIT files but prevent Garmin upload by using bad Garmin creds.
-      # This step may end with a non zero exit code because Garmin login fails.
-      # continue-on-error lets the job proceed so we can still use the FIT files.
+      # The command will likely exit non-zero due to Garmin login failure. We swallow it.
       - name: Generate FIT files (no Garmin upload)
         working-directory: rgs
         continue-on-error: true
@@ -64,9 +74,10 @@ jobs:
           ./publish/rgs sync \
             --gu "no-upload@example.com" --gpw "bad-password" \
             --ru "${{ secrets.RENPHO_EMAIL }}" --rpw "${{ secrets.RENPHO_PASSWORD }}" \
-            --renphoProfile "${{ matrix.profile }}"
+            --renphoProfile "${{ matrix.profile }}" || true
 
       - name: List generated FIT files (${{ matrix.profile }})
+        if: always()
         run: |
           echo "=== rgs-cache-${{ matrix.profile }} FIT files ==="
           find "rgs-cache-${{ matrix.profile }}" -type f -name '*.fit' -maxdepth 6 -print || true
@@ -81,6 +92,7 @@ jobs:
             rgs/config.json
 
   display:
+    if: ${{ always() }}
     runs-on: ubuntu-latest
     needs: pull
     steps:
