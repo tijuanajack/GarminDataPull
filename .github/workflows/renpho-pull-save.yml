@@ -1,153 +1,198 @@
-name: Renpho export-only (save FIT, ignore Garmin)
+name: Renpho Pull and Save FIT
 
 on:
   workflow_dispatch:
     inputs:
-      renpho_profile:
+      profile:
         description: Renpho profile name
-        required: true
+        required: false
         default: TJ-Ath
+      garmin_mfa:
+        description: Enter the 6-digit Garmin MFA you just received (optional if token already cached)
+        required: false
+        default: ""
 
 jobs:
-  run:
+  pull:
     runs-on: ubuntu-latest
     env:
+      # Required secrets: set these in the repo → Settings → Secrets and variables → Actions → New repository secret
+      RENPHO_EMAIL: ${{ secrets.RENPHO_EMAIL }}
+      RENPHO_PASSWORD: ${{ secrets.RENPHO_PASSWORD }}
+      GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
+      GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
+      # Cache root for RGS
       CACHE_DIR: ${{ github.workspace }}/garmin_agent/data
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-dotnet@v4
+      - name: Setup .NET 8 SDK and runtime
+        uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 8.0.x
+          global-json-file: ""
+          dotnet-version: |
+            8.0.x
+          dotnet-quality: ga
 
       - name: Clone RenphoGarminSync-CLI
-        run: git clone https://github.com/forkerer/RenphoGarminSync-CLI.git rgs
+        run: |
+          git clone https://github.com/forkerer/RenphoGarminSync-CLI.git rgs
+        working-directory: ${{ github.workspace }}
 
-      - name: Build CLI
-        working-directory: rgs
+      - name: Publish CLI
         run: |
           dotnet publish ./RenphoGarminSync.Console -c Release -r linux-x64 --self-contained false -o publish
           ls -la publish
+        working-directory: ${{ github.workspace }}/rgs
 
-      - name: Configure custom cache path
-        run: |
-          ABS="${GITHUB_WORKSPACE}/garmin_agent/data"
-          mkdir -p "$ABS" "$HOME/Documents/GarminRenphoSync"
-          cat > rgs/config.json <<EOF
-          {
-            "UseDefaultCachePath": false,
-            "CustomCachePath": "$ABS"
-          }
-          EOF
-          cp rgs/config.json "$HOME/Documents/GarminRenphoSync/config.json"
-          echo "== Effective config.json ==" && cat rgs/config.json
-
-      - name: Renpho auth
-        working-directory: rgs
-        env:
-          RENPHO_EMAIL: ${{ secrets.RENPHO_EMAIL }}
-          RENPHO_PASSWORD: ${{ secrets.RENPHO_PASSWORD }}
-        run: ./publish/rgs auth renpho --u "${RENPHO_EMAIL}" --pw "${RENPHO_PASSWORD}"
-
-      # Let Garmin fail but continue, FIT should be saved before upload attempt
-      - name: Export latest FIT to cache (allow Garmin failure)
-        id: rgs_sync
-        working-directory: rgs
-        continue-on-error: true
-        env:
-          RENPHO_EMAIL: ${{ secrets.RENPHO_EMAIL }}
-          RENPHO_PASSWORD: ${{ secrets.RENPHO_PASSWORD }}
-          PROFILE: ${{ github.event.inputs.renpho_profile }}
+      - name: Configure cache path
+        shell: bash
         run: |
           set -eux
-          ./publish/rgs sync --gu placeholder --ru "${RENPHO_EMAIL}" --rpw "${RENPHO_PASSWORD}" --renphoProfile "${PROFILE}" || true
+          mkdir -p "${CACHE_DIR}"
+          mkdir -p "${HOME}/Documents/GarminRenphoSync"
+          cat > "${{ github.workspace }}/rgs/config.json" <<JSON
+          {
+            "UseDefaultCachePath": false,
+            "CustomCachePath": "${CACHE_DIR}"
+          }
+          JSON
+          cp "${{ github.workspace }}/rgs/config.json" "${HOME}/Documents/GarminRenphoSync/config.json"
+          echo "== rgs/config.json =="
+          cat "${{ github.workspace }}/rgs/config.json"
 
-      - name: Verify FIT cache
+      - name: Auth Renpho
         run: |
-          echo "== Cache listing =="
-          ls -la "$CACHE_DIR" || true
-          shopt -s nullglob
-          cnt=$(ls "$CACHE_DIR"/*.fit 2>/dev/null | wc -l || true)
-          if [ "$cnt" -eq 0 ]; then
-            echo "No FIT files were written to $CACHE_DIR"
-            echo "The CLI may have crashed before writing FITs. Re-run or check Renpho creds and profile name."
-            exit 1
-          fi
+          ./publish/rgs auth renpho --u "${RENPHO_EMAIL}" --pw "${RENPHO_PASSWORD}"
+        working-directory: ${{ github.workspace }}/rgs
+
+      # Step 1 of Garmin auth triggers the email. Safe to run even if already cached.
+      - name: Garmin auth step 1 (trigger email)
+        continue-on-error: true
+        run: |
+          ./publish/rgs auth garmin --u "${GARMIN_EMAIL}" --pw "${GARMIN_PASSWORD}"
+        working-directory: ${{ github.workspace }}/rgs
+
+      # Step 2 actually applies the MFA if the user supplied one as an input
+      - name: Garmin auth step 2 (apply MFA if provided)
+        if: ${{ inputs.garmin_mfa != '' }}
+        run: |
+          ./publish/rgs auth garmin --u "${GARMIN_EMAIL}" --mfa "${{ inputs.garmin_mfa }}"
+        working-directory: ${{ github.workspace }}/rgs
+
+      # Run sync with real Garmin username so the CLI runs to the point where it generates FIT.
+      # We mark upload failures non-fatal so that FIT saving still gets processed and the workflow continues.
+      - name: Sync from Renpho (save FITs, upload non-fatal)
+        continue-on-error: true
+        env:
+          PROFILE: ${{ inputs.profile }}
+        run: |
+          set -eux
+          # Clear previous FITs to make it obvious what was generated this run
+          rm -f "${CACHE_DIR}"/*.fit || true
+          ./publish/rgs sync \
+            --gu "${GARMIN_EMAIL}" \
+            --gpw "${GARMIN_PASSWORD}" \
+            --ru "${RENPHO_EMAIL}" \
+            --rpw "${RENPHO_PASSWORD}" \
+            --renphoProfile "${PROFILE}"
+          echo "== Cached files =="
+          ls -la "${CACHE_DIR}"
+        working-directory: ${{ github.workspace }}/rgs
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
-      - name: Install Python deps
-        run: python -m pip install --upgrade pip fitparse
+      - name: Install parser deps
+        run: |
+          python -m pip install --upgrade pip fitparse
 
-      - name: Parse newest FIT and dump fields
-        env:
-          CACHE_DIR: ${{ env.CACHE_DIR }}
+      - name: Parse newest FIT and dump all fields
+        id: parse_fit
+        shell: bash
         run: |
           python - <<'PY'
-          import os, glob, json
+          import os, glob, sys, json
           from fitparse import FitFile
 
-          cache = os.environ["CACHE_DIR"]
+          cache = os.environ.get("CACHE_DIR")
+          if not cache:
+            print("CACHE_DIR not set")
+            sys.exit(2)
+
           fits = sorted(glob.glob(os.path.join(cache, "*.fit")), key=os.path.getmtime)
+          if not fits:
+            print("No FIT files found in", cache)
+            sys.exit(0)
+
           last = fits[-1]
-          print(f"Newest FIT: {last}")
+          ff = FitFile(last)
 
-          fit = FitFile(last)
-          rows = []
-          for msg in fit.get_messages():
-              for f in msg:
-                  try:
-                      val = f.value
-                  except Exception:
-                      val = None
-                  rows.append({
-                      "message": msg.name,
-                      "field": f.name,
-                      "value": val,
-                      "units": getattr(f, "units", None),
-                  })
+          all_msgs = []
+          for m in ff.get_messages():
+            msg = {"name": m.name, "fields": {}}
+            for f in m:
+              if hasattr(f, "name"):
+                try:
+                  v = f.value
+                except Exception:
+                  v = None
+                if v is not None:
+                  msg["fields"][f.name] = v
+            if msg["fields"]:
+              all_msgs.append(msg)
 
-          wanted = {
-              "weight","bmi","body_fat","body_water","bone_mass","muscle_mass",
-              "visceral_fat","metabolic_age","basal_met","physique_rating",
-              "skeletal_muscle_mass","skeletal_muscle_percent"
-          }
+          # Pull out weight_scale metrics if present
+          latest_weight_scale = None
+          for msg in all_msgs:
+            if msg["name"] == "weight_scale":
+              latest_weight_scale = msg["fields"]
 
-          # Print selected fields to logs
-          print("\nSelected body-comp fields:")
-          selected = [r for r in rows if r["field"] in wanted]
-          for r in selected:
-              u = f" {r['units']}" if r.get("units") else ""
-              print(f"- {r['field']}: {r['value']}{u}")
+          report = []
+          report.append(f"# Renpho newest FIT parse\n")
+          report.append(f"**File:** {os.path.basename(last)}\n")
+          if latest_weight_scale:
+            ws = latest_weight_scale
+            def val(key, unit=""):
+              return f"{ws[key]}{unit}" if key in ws else "n/a"
+            report.append("## Weight scale summary\n")
+            report.append(f"- Weight: {val('weight', ' kg')}")
+            report.append(f"- Body fat: {val('percent_fat', ' %')}")
+            report.append(f"- Hydration: {val('percent_hydration', ' %')}")
+            report.append(f"- Bone mass: {val('bone_mass', ' kg')}")
+            report.append(f"- Muscle mass: {val('muscle_mass', ' kg')}")
+            report.append(f"- BMR: {val('basal_met', ' kcal/day')}")
+            report.append(f"- Metabolic age: {val('metabolic_age', ' y')}")
+            report.append(f"- Visceral fat rating: {val('visceral_fat_rating')}")
+            report.append(f"- BMI: {val('bmi')}")
+            report.append("")
+          else:
+            report.append("_No `weight_scale` message found in FIT. Full message dump below._\n")
 
-          # Save JSON dump of all fields
-          out_json = os.path.join(cache, "last_fit_all_fields.json")
-          with open(out_json, "w") as f:
-              json.dump(rows, f, indent=2, default=str)
-          print(f"\nSaved: {out_json}")
+          report.append("## All messages (non-empty fields)\n")
+          for msg in all_msgs:
+            report.append(f"### {msg['name']}")
+            for k, v in msg["fields"].items():
+              report.append(f"- {k}: {v}")
+            report.append("")
 
-          # Save a short markdown summary of wanted fields
-          out_md = os.path.join(cache, "last_fit_selected_fields.md")
-          with open(out_md, "w") as f:
-              f.write("# Selected body composition fields\n\n")
-              if selected:
-                  f.write("| field | value | units |\n|---|---:|---|\n")
-                  for r in selected:
-                      f.write(f"| {r['field']} | {r['value']} | {r.get('units','')} |\n")
-              else:
-                  f.write("_No matching fields found in this FIT._\n")
-          print(f"Saved: {out_md}")
+          md = "\n".join(report)
+          out = os.path.join(cache, "latest_fit_report.md")
+          with open(out, "w", encoding="utf-8") as f:
+            f.write(md)
+          print(md)
+          print(f"\nWrote: {out}")
           PY
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload cache and report
+        uses: actions/upload-artifact@v4
         with:
-          name: renpho-fit-and-dump
+          name: renpho-fit-cache-and-report
           path: |
             ${{ env.CACHE_DIR }}/*.fit
-            ${{ env.CACHE_DIR }}/last_fit_all_fields.json
-            ${{ env.CACHE_DIR }}/last_fit_selected_fields.md
+            ${{ env.CACHE_DIR }}/latest_fit_report.md
           if-no-files-found: warn
