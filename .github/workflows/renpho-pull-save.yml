@@ -1,10 +1,10 @@
-name: Pull TJ-Ath and display last FIT fields
+name: TJ-Ath last FIT dump (upload disabled via patch)
 
 on:
   workflow_dispatch:
 
 jobs:
-  pull_and_display:
+  tj_ath_fit_dump_no_upload:
     runs-on: ubuntu-latest
 
     steps:
@@ -19,67 +19,116 @@ jobs:
       - name: Clone RenphoGarminSync-CLI
         run: git clone https://github.com/forkerer/RenphoGarminSync-CLI.git rgs
 
-      - name: Publish CLI (linux-x64, framework-dependent)
+      # Tiny build patch:
+      # Wrap any line that calls Garmin "Upload" or "Auth/Login" in #if !DISABLE_GARMIN_UPLOAD ... #endif
+      # so when we compile with DISABLE_GARMIN_UPLOAD defined, those lines are skipped.
+      - name: Patch to disable Garmin upload and auth
+        working-directory: rgs
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          # Helper: wrap matching lines with preprocessor guards
+          wrap_lines() {
+            local file="$1" pattern="$2"
+            # Use awk to insert guards around lines matching the pattern
+            awk -v pat="$pattern" '
+              BEGIN{added=0}
+              {
+                if ($0 ~ pat) {
+                  print "#if !DISABLE_GARMIN_UPLOAD"
+                  print $0
+                  print "#endif // !DISABLE_GARMIN_UPLOAD"
+                  added=1
+                } else {
+                  print $0
+                }
+              }
+              END{
+                if (added==1) {
+                  # noop
+                }
+              }
+            ' "$file" > "$file.patched"
+            mv "$file.patched" "$file"
+          }
+
+          # Target only code files in the Console app and nearby libs
+          mapfile -t CSHARPS < <(find . -type f -name '*.cs' | grep -E 'RenphoGarminSync\.(Console|ConsoleApp|Garmin|GarminSync|Uploader|Api)')
+
+          # Patterns to wrap: any single line that contains these tokens
+          # 1) Upload calls involving Garmin
+          # 2) Auth/Login against Garmin
+          for f in "${CSHARPS[@]}"; do
+            # Wrap Upload lines
+            wrap_lines "$f" '(Upload[^A-Za-z]|Upload$|\.Upload|UploadToGarmin|UploadMeasurements|UploadAll)'
+            # Wrap Garmin auth lines
+            wrap_lines "$f" '(Authenticate|Auth|Login|SignIn).*Garmin|Garmin.*(Authenticate|Auth|Login|SignIn)'
+          done
+
+          echo "=== Diff preview (first 200 lines) ==="
+          git --no-pager diff | sed -n '1,200p' || true
+
+      - name: Publish CLI (DISABLE_GARMIN_UPLOAD)
         working-directory: rgs
         run: |
           dotnet publish ./RenphoGarminSync.Console \
             -c Release \
             -r linux-x64 \
+            -p:DefineConstants="DISABLE_GARMIN_UPLOAD" \
             --self-contained false \
             -o ./publish
           ls -la ./publish
 
-      # Point RGS cache to a workspace folder and also drop a config in the default Documents path
-      - name: Configure cache path
+      # Point cache exactly to your repo's garmin_agent/data
+      - name: Configure cache path to garmin_agent/data
         run: |
           set -eux
-          mkdir -p "${GITHUB_WORKSPACE}/rgs-cache-TJ-Ath"
-          mkdir -p "${HOME}/Documents/GarminRenphoSync"
+          mkdir -p "${GITHUB_WORKSPACE}/garmin_agent/data"
+          mkdir -p "${HOME}/Documents/GarminRenphoSync"  # write here too for safety
 
+          # Config beside the binary
           cat > "${GITHUB_WORKSPACE}/rgs/config.json" <<'JSON'
           {
             "UseDefaultCachePath": false,
-            "CustomCachePath": "${GITHUB_WORKSPACE}/rgs-cache-TJ-Ath"
+            "CustomCachePath": "${GITHUB_WORKSPACE}/garmin_agent/data"
           }
           JSON
 
+          # And in default Documents path (the app may check this location)
           cat > "${HOME}/Documents/GarminRenphoSync/config.json" <<'JSON'
           {
             "UseDefaultCachePath": false,
-            "CustomCachePath": "${GITHUB_WORKSPACE}/rgs-cache-TJ-Ath"
+            "CustomCachePath": "${GITHUB_WORKSPACE}/garmin_agent/data"
           }
           JSON
 
           echo "== rgs/config.json =="
-          cat "${GITHUB_WORKSPACE}/rgs/config.json" || true
+          cat "${GITHUB_WORKSPACE}/rgs/config.json"
           echo "== Documents/GarminRenphoSync/config.json =="
-          cat "${HOME}/Documents/GarminRenphoSync/config.json" || true
+          cat "${HOME}/Documents/GarminRenphoSync/config.json"
 
-      - name: Renpho auth
+      - name: Renpho auth (TJ-Ath)
         working-directory: rgs
         run: ./publish/rgs auth renpho --u "${{ secrets.RENPHO_EMAIL }}" --pw "${{ secrets.RENPHO_PASSWORD }}"
 
-      # Real processing required to produce FITs.
-      # We intentionally use bogus Garmin creds so nothing uploads.
-      # If the tool errors after writing FITs, continue so we can still parse them.
-      - name: Generate FITs for TJ-Ath (no Garmin upload)
+      # Real processing required to produce FITs. Upload/auth lines are compiled out.
+      - name: Sync to create FITs (TJ-Ath, upload disabled)
         working-directory: rgs
-        continue-on-error: true
+        env:
+          RU: ${{ secrets.RENPHO_EMAIL }}
+          RPW: ${{ secrets.RENPHO_PASSWORD }}
         run: |
+          set -eux
           ./publish/rgs sync \
-            --gu "no-upload@example.com" \
-            --gpw "bad-password" \
-            --ru "${{ secrets.RENPHO_EMAIL }}" \
-            --rpw "${{ secrets.RENPHO_PASSWORD }}" \
-            --rprofile "TJ-Ath" \
-            || true
+            --ru "$RU" \
+            --rpw "$RPW" \
+            --rprofile "TJ-Ath"
 
-      - name: Show possible FIT locations
+      - name: Show saved FITs under garmin_agent/data
         run: |
-          echo "=== Workspace cache ==="
-          find "${GITHUB_WORKSPACE}/rgs-cache-TJ-Ath" -type f -name '*.fit' -maxdepth 6 -print || true
-          echo "=== Default Documents cache ==="
-          find "${HOME}/Documents/GarminRenphoSync" -type f -name '*.fit' -maxdepth 6 -print || true
+          echo "=== ${GITHUB_WORKSPACE}/garmin_agent/data FIT files ==="
+          find "${GITHUB_WORKSPACE}/garmin_agent/data" -type f -name '*.fit' -maxdepth 6 -print || true
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -91,67 +140,54 @@ jobs:
           python -m pip install --upgrade pip
           pip install fitparse
 
-      # Find the newest TJ-Ath FIT from either cache and print ALL fields
-      - name: Display ALL fields from the last TJ-Ath FIT
+      - name: Dump ALL fields from newest TJ-Ath FIT
         shell: python
         run: |
           import os, glob, sys
-          from datetime import datetime
           from fitparse import FitFile
 
-          ws_cache = os.path.join(os.environ["GITHUB_WORKSPACE"], "rgs-cache-TJ-Ath")
-          docs_cache = os.path.expanduser("~/Documents/GarminRenphoSync")
-
-          # Gather candidates from common places
-          candidates = []
-          for base in [ws_cache, docs_cache]:
-              for pattern in [
-                os.path.join(base, "**", "*.fit"),
-                os.path.join(base, "fit", "TJ-Ath", "*.fit"),
-                os.path.join(base, "TJ-Ath", "*.fit"),
-              ]:
-                  candidates.extend(glob.glob(pattern, recursive=True))
+          base = os.path.join(os.environ["GITHUB_WORKSPACE"], "garmin_agent", "data")
+          candidates = glob.glob(os.path.join(base, "**", "*.fit"), recursive=True)
 
           if not candidates:
-              print("No FIT files found for TJ-Ath in either cache path.")
-              sys.exit(0)
+            print("No FIT files found in garmin_agent/data")
+            sys.exit(1)
 
           latest = max(candidates, key=os.path.getmtime)
           print(f"Using latest FIT: {latest}")
 
           ff = FitFile(latest)
 
-          # Dump everything
           lines = []
           lines.append(f"# All fields from FIT: {os.path.basename(latest)}")
-          for i, msg in enumerate(ff.get_messages(), 1):
-              try:
-                  vals = {f.name: f.value for f in msg}
-              except Exception:
-                  # Some messages may not support iteration like that
-                  vals = {}
-                  for field in msg.fields:
-                      try:
-                          vals[field.name] = field.value
-                      except Exception:
-                          vals[field.name] = None
-              lines.append(f"\n## Message {i}: {msg.name}")
-              for k, v in vals.items():
-                  lines.append(f"- {k}: {v}")
+          idx = 0
+          for msg in ff.get_messages():
+            idx += 1
+            # Safely collect every field in the message
+            vals = {}
+            try:
+              vals = {f.name: f.value for f in msg}
+            except Exception:
+              for field in msg.fields:
+                try:
+                  vals[field.name] = field.value
+                except Exception:
+                  vals[field.name] = None
+            lines.append(f"\n## Message {idx}: {msg.name}")
+            for k, v in vals.items():
+              lines.append(f"- {k}: {v}")
 
-          dump_path = "tj_ath_last_fit_all_fields.md"
-          with open(dump_path, "w", encoding="utf-8") as f:
-              f.write("\n".join(lines))
+          with open("tj_ath_last_fit_all_fields.md", "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
 
-          # Also echo summary to logs
-          print("\n".join(lines[:2000]))  # guard log size
+          # Also echo a trimmed version to logs
+          print("\n".join(lines[:2000]))
 
-      - name: Upload FIT and field dump
+      - name: Upload FITs and field dump
         uses: actions/upload-artifact@v4
         with:
-          name: tj-ath-last-fit-and-dump
+          name: tj-ath-fit-and-dump
           path: |
-            rgs-cache-TJ-Ath
+            garmin_agent/data
             tj_ath_last_fit_all_fields.md
           if-no-files-found: warn
-
