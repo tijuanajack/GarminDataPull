@@ -1,180 +1,36 @@
-name: TJ-Ath → garmin_agent/data (dump all FIT fields, guarded)
+- name: Sync to create a FIT then kill quickly
+  working-directory: rgs
+  env:
+    GARMIN_EMAIL:    ${{ secrets.GARMIN_EMAIL }}
+    RENPHO_EMAIL:    ${{ secrets.RENPHO_EMAIL }}
+    RENPHO_PASSWORD: ${{ secrets.RENPHO_PASSWORD }}
+  run: |
+    set -euxo pipefail
+    CACHE_DIR="${GITHUB_WORKSPACE}/garmin_agent/data"
+    rm -f "${CACHE_DIR}/"*.fit || true
 
-on:
-  workflow_dispatch:
+    ./publish/rgs sync \
+      --gu "${GARMIN_EMAIL}" \
+      --ru "${RENPHO_EMAIL}" --rpw "${RENPHO_PASSWORD}" \
+      --renphoProfile "TJ-Ath" &
+    RGS_PID=$!
 
-jobs:
-  tj_ath_fit_dump_guarded:
-    runs-on: ubuntu-latest
+    # Wait up to 300s for a FIT to appear
+    for _ in $(seq 1 300); do
+      if ls "${CACHE_DIR}/"*.fit >/dev/null 2>&1; then
+        echo "FIT detected. Terminating rgs PID=${RGS_PID}"
+        kill "${RGS_PID}" || true
+        sleep 2
+        kill -9 "${RGS_PID}" || true
+        break
+      fi
+      sleep 1
+    done
 
-    env:
-      CACHE_DIR: ${{ github.workspace }}/garmin_agent/data
+    echo "== Cached files =="
+    ls -la "${CACHE_DIR}" || true
+    echo "== Workspace tree (first 200 lines) =="
+    find "${GITHUB_WORKSPACE}" -maxdepth 4 -type f | sed -n '1,200p'
+    echo "== Any .fit anywhere under workspace =="
+    find "${GITHUB_WORKSPACE}" -type f -name '*.fit' -print || true
 
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup .NET 8
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '8.0.x'
-
-      - name: Clone RenphoGarminSync-CLI
-        run: git clone https://github.com/forkerer/RenphoGarminSync-CLI.git rgs
-
-      - name: Publish CLI
-        working-directory: rgs
-        run: |
-          dotnet publish ./RenphoGarminSync.Console \
-            -c Release \
-            -r linux-x64 \
-            --self-contained false \
-            -o ./publish
-          echo "== publish contents =="
-          ls -la ./publish
-
-      - name: Install jq
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y jq
-
-      # Patch cache path in-place so the app keeps all other config values it needs
-      - name: Configure cache path in publish/config.json (preserve others)
-        run: |
-          set -eux
-          mkdir -p "${CACHE_DIR}"
-          mkdir -p "${HOME}/Documents/GarminRenphoSync"
-
-          CFG="${GITHUB_WORKSPACE}/rgs/publish/config.json"
-          cp "$CFG" "$CFG.bak"
-
-          # Update only these two fields
-          jq --arg p "${GITHUB_WORKSPACE}/garmin_agent/data" \
-             '.UseDefaultCachePath=false | .CustomCachePath=$p' \
-             "$CFG" > "${CFG}.tmp"
-          mv "${CFG}.tmp" "$CFG"
-
-          # Also place a copy in Documents fallback
-          install -D "$CFG" "${HOME}/Documents/GarminRenphoSync/config.json"
-
-          echo "== Effective publish/config.json =="
-          cat "$CFG"
-          echo "== Documents/GarminRenphoSync/config.json =="
-          cat "${HOME}/Documents/GarminRenphoSync/config.json"
-
-      - name: Garmin auth
-        working-directory: rgs
-        env:
-          GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
-          GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
-          GARMIN_MFA_CODE: ${{ secrets.GARMIN_MFA_CODE }}
-        run: |
-          set -euxo pipefail
-          ./publish/rgs auth garmin --u "${GARMIN_EMAIL}" --pw "${GARMIN_PASSWORD}"
-          # Only run MFA if provided
-          if [ -n "${GARMIN_MFA_CODE:-}" ]; then
-            ./publish/rgs auth garmin --u "${GARMIN_EMAIL}" --mfa "${GARMIN_MFA_CODE}"
-          fi
-
-      - name: Renpho auth (TJ-Ath)
-        working-directory: rgs
-        env:
-          RENPHO_EMAIL: ${{ secrets.RENPHO_EMAIL }}
-          RENPHO_PASSWORD: ${{ secrets.RENPHO_PASSWORD }}
-        run: ./publish/rgs auth renpho --u "${RENPHO_EMAIL}" --pw "${RENPHO_PASSWORD}"
-
-      # Real sync to produce FITs. Kill as soon as a FIT appears to minimize upload risk.
-      - name: Sync to create a FIT then kill quickly
-        working-directory: rgs
-        env:
-          GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
-          GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
-          RENPHO_EMAIL: ${{ secrets.RENPHO_EMAIL }}
-          RENPHO_PASSWORD: ${{ secrets.RENPHO_PASSWORD }}
-        run: |
-          set -euxo pipefail
-          rm -f "${CACHE_DIR}/"*.fit || true
-
-          ./publish/rgs sync \
-            --gu "${GARMIN_EMAIL}" \
-            --gpw "${GARMIN_PASSWORD}" \
-            --ru "${RENPHO_EMAIL}" \
-            --rpw "${RENPHO_PASSWORD}" \
-            --renphoProfile "TJ-Ath" &
-          RGS_PID=$!
-
-          # Poll up to 120s for a FIT file, then kill the sync
-          for _ in $(seq 1 120); do
-            if ls "${CACHE_DIR}/"*.fit >/dev/null 2>&1; then
-              echo "FIT detected in ${CACHE_DIR}. Terminating rgs PID=${RGS_PID}"
-              kill "${RGS_PID}" || true
-              sleep 2
-              kill -9 "${RGS_PID}" || true
-              break
-            fi
-            sleep 1
-          done
-
-          echo "== Cached files =="
-          ls -la "${CACHE_DIR}" || true
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.x'
-
-      - name: Install fitparse
-        run: |
-          python -m pip install --upgrade pip
-          pip install fitparse
-
-      - name: Dump ALL fields from newest TJ-Ath FIT
-        shell: python
-        run: |
-          import os, glob, sys
-          from fitparse import FitFile
-
-          base = os.path.join(os.environ["GITHUB_WORKSPACE"], "garmin_agent", "data")
-          candidates = glob.glob(os.path.join(base, "*.fit"))
-          if not candidates:
-            print("No FIT files found in garmin_agent/data")
-            # Show directory to aid debugging
-            print("Listing:")
-            for p in glob.glob(os.path.join(base, "*")):
-              print(" -", os.path.basename(p))
-            sys.exit(1)
-
-          latest = max(candidates, key=os.path.getmtime)
-          print(f"Using latest FIT: {latest}")
-
-          ff = FitFile(latest)
-          lines = []
-          lines.append(f"# All fields from FIT: {os.path.basename(latest)}")
-          for i, msg in enumerate(ff.get_messages(), 1):
-            vals = {}
-            try:
-              vals = {f.name: f.value for f in msg}
-            except Exception:
-              for field in msg.fields:
-                try:
-                  vals[field.name] = field.value
-                except Exception:
-                  vals[field.name] = None
-            lines.append(f"\n## Message {i}: {msg.name}")
-            for k, v in vals.items():
-              lines.append(f"- {k}: {v}")
-
-          with open("tj_ath_last_fit_all_fields.md", "w", encoding="utf-8") as f:
-            f.write("\n".join(lines))
-
-          # Echo a trimmed version to logs
-          print("\n".join(lines[:2000]))
-
-      - name: Upload FIT and dump
-        uses: actions/upload-artifact@v4
-        with:
-          name: tj-ath-fit-and-dump
-          path: |
-            garmin_agent/data
-            tj_ath_last_fit_all_fields.md
-          if-no-files-found: warn
