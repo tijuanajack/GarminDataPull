@@ -1,0 +1,53 @@
+name: Pull Renpho and save FIT files
+
+on:
+  workflow_dispatch:
+
+jobs:
+  pull:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore RGS cache
+        uses: actions/cache@v4
+        with:
+          path: rgs-cache
+          key: rgs-cache-v1
+
+      - name: Point RGS to custom cache folder
+        run: |
+          mkdir -p rgs-cache
+          cat > config.json << 'JSON'
+          {
+            "UseDefaultCachePath": false,
+            "CustomCachePath": "${{ github.workspace }}/rgs-cache"
+          }
+          JSON
+
+      - name: Build CLI
+        run: |
+          dotnet build -c Release
+          dotnet publish ./RenphoGarminSync.Console -c Release -r linux-x64 -p:PublishSingleFile=true -p:PublishTrimmed=true -o ./publish
+
+      - name: Verify Renpho auth
+        run: ./publish/rgs auth renpho --u "${{ secrets.RENPHO_EMAIL }}" --pw "${{ secrets.RENPHO_PASSWORD }}"
+
+      - name: Pull newest and save FIT files (no upload)
+        run: ./publish/rgs sync \
+               --gu "placeholder" --gpw "placeholder" \
+               --ru "${{ secrets.RENPHO_EMAIL }}" --rpw "${{ secrets.RENPHO_PASSWORD }}" \
+               --dry-run
+
+      - name: Upload FIT files and cache
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: renpho-fit-and-cache
+          path: |
+            rgs-cache
+            config.json
