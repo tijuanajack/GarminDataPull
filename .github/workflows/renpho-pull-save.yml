@@ -183,9 +183,3 @@ jobs:
             garmin_agent/data
             tj_ath_last_fit_all_fields.md
           if-no-files-found: warn
-
-          path: |
-            garmin_agent/data
-            tj_ath_last_fit_all_fields.md
-          if-no-files-found: warn
-
