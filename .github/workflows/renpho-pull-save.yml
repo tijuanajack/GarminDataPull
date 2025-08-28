@@ -10,6 +10,7 @@ on:
 
 env:
   CACHE_DIR: ${{ github.workspace }}/garmin_agent/data
+  RGS_EXPORT_ONLY: "1"   # belt-and-suspenders guard
 
 jobs:
   export_only:
@@ -43,13 +44,12 @@ jobs:
                   {
                       var root = new RootCommand("RenphoGarminSync CLI");
 
-                      // auth commands
                       var auth = new Command("auth", "Authenticate with services");
 
                       // auth renpho
                       var renpho = new Command("renpho", "Authenticate with Renpho");
-                      var renphoUser = new Option<string>("--u", description: "Renpho username/email") { IsRequired = true };
-                      var renphoPass = new Option<string>("--pw", description: "Renpho password") { IsRequired = true };
+                      var renphoUser = new Option<string>("--u") { IsRequired = true };
+                      var renphoPass = new Option<string>("--pw") { IsRequired = true };
                       renpho.AddOption(renphoUser);
                       renpho.AddOption(renphoPass);
                       renpho.SetHandler(async (string u, string pw) =>
@@ -58,11 +58,11 @@ jobs:
                           await h.InvokeAsync();
                       }, renphoUser, renphoPass);
 
-                      // auth garmin
+                      // auth garmin (unused in export-only flow, but keep command intact)
                       var garmin = new Command("garmin", "Authenticate with Garmin");
-                      var garminUser = new Option<string>("--u", description: "Garmin username/email") { IsRequired = true };
-                      var garminPass = new Option<string?>("--pw", description: "Garmin password") { IsRequired = false };
-                      var garminMfa  = new Option<string?>("--mfa", description: "Garmin MFA code") { IsRequired = false };
+                      var garminUser = new Option<string>("--u") { IsRequired = true };
+                      var garminPass = new Option<string?>("--pw");
+                      var garminMfa  = new Option<string?>("--mfa");
                       garmin.AddOption(garminUser);
                       garmin.AddOption(garminPass);
                       garmin.AddOption(garminMfa);
@@ -76,24 +76,17 @@ jobs:
                       auth.AddCommand(garmin);
                       root.AddCommand(auth);
 
-                      // sync command
+                      // sync
                       var sync = new Command("sync", "Sync Renpho measurements (and optionally upload to Garmin)");
 
-                      var gu = new Option<string>("--garminUsername", description: "Garmin username/email");
-                      gu.AddAlias("--gu");
-                      var gpw = new Option<string?>("--garminPassword", description: "Garmin password");
-                      gpw.AddAlias("--gpw");
-
-                      var ru = new Option<string>("--renphoUsername", description: "Renpho username/email") { IsRequired = true };
-                      ru.AddAlias("--ru");
-                      var rpw = new Option<string>("--renphoPassword", description: "Renpho password") { IsRequired = true };
-                      rpw.AddAlias("--rpw");
-                      var rprofile = new Option<string>("--renphoProfile", description: "Renpho profile") { IsRequired = false };
-                      rprofile.AddAlias("--rprofile");
-
-                      var dryRun = new Option<bool>("--dry-run", description: "Only check, do not process");
-                      var noFitFiles = new Option<bool>("--no-fit-files", description: "Skip writing FIT files");
-                      var exportOnly = new Option<bool>("--export-only", description: "Write FIT files but skip Garmin upload");
+                      var gu = new Option<string>("--garminUsername"); gu.AddAlias("--gu");
+                      var gpw = new Option<string?>("--garminPassword"); gpw.AddAlias("--gpw");
+                      var ru = new Option<string>("--renphoUsername") { IsRequired = true }; ru.AddAlias("--ru");
+                      var rpw = new Option<string>("--renphoPassword") { IsRequired = true }; rpw.AddAlias("--rpw");
+                      var rprofile = new Option<string>("--renphoProfile"); rprofile.AddAlias("--rprofile");
+                      var dryRun = new Option<bool>("--dry-run");
+                      var noFitFiles = new Option<bool>("--no-fit-files");
+                      var exportOnly = new Option<bool>("--export-only", "Write FIT files but skip Garmin upload");
 
                       sync.AddOption(gu);
                       sync.AddOption(gpw);
@@ -118,22 +111,27 @@ jobs:
           }
           CS
 
-      - name: Patch handler to honor --export-only
+      - name: Patch handler to honor --export-only and no-op uploader
         working-directory: rgs
         run: |
           python - <<'PY'
           import re, pathlib
+
           p = pathlib.Path("RenphoGarminSync.Console/RenphoGarminSyncCommandHandler.cs")
           s = p.read_text(encoding="utf-8")
 
-          # add field
+          # Ensure we can use Environment in the file
+          if "using System;" not in s.splitlines()[0:20]:
+              s = "using System;\n" + s
+
+          # Add _exportOnly field
           if "_exportOnly" not in s:
               s = s.replace(
                   "private readonly bool _noFitFiles;",
                   "private readonly bool _noFitFiles;\n        private readonly bool _exportOnly;"
               )
 
-          # extend constructor signature and assign
+          # Extend constructor signature to include exportOnly
           s = re.sub(
               r"public\s+RenphoGarminSyncCommandHandler\(([^)]*?)\)\s*\{",
               r"public RenphoGarminSyncCommandHandler(\1, bool exportOnly)\n        {",
@@ -145,31 +143,35 @@ jobs:
                   "_noFitFiles = noFitFiles;\n            _exportOnly = exportOnly;"
               )
 
-          # effectiveNoFitFiles at top of InvokeAsync
+          # At top of InvokeAsync establish effectiveNoFitFiles and relax Garmin requirement
           if "effectiveNoFitFiles" not in s:
               s = s.replace(
                   "public async Task<int> InvokeAsync()\n        {",
-                  "public async Task<int> InvokeAsync()\n        {\n            var effectiveNoFitFiles = _exportOnly ? false : _noFitFiles;"
+                  "public async Task<int> InvokeAsync()\n        {\n            var effectiveNoFitFiles = _exportOnly || (Environment.GetEnvironmentVariable(\"RGS_EXPORT_ONLY\") == \"1\") ? false : _noFitFiles;"
               )
-
-          # require Garmin only when not export-only
           if "Garmin username/email is required unless --export-only is set." not in s:
               s = s.replace(
                   "var renpho = new RenphoApi();",
-                  "if (!_exportOnly && string.IsNullOrWhiteSpace(_garminUsername))\n                throw new ArgumentException(\"Garmin username/email is required unless --export-only is set.\");\n\n            var renpho = new RenphoApi();"
+                  "if (!(_exportOnly || Environment.GetEnvironmentVariable(\"RGS_EXPORT_ONLY\") == \"1\") && string.IsNullOrWhiteSpace(_garminUsername))\n                throw new ArgumentException(\"Garmin username/email is required unless --export-only is set.\");\n\n            var renpho = new RenphoApi();"
               )
 
-          # ensure we save FIT using effectiveNoFitFiles and skip upload when export-only
+          # Force SaveFitFileAsync to run based on effectiveNoFitFiles and skip upload entirely when export-only
           s = re.sub(
               r"foreach\s*\(var\s+m\s+in\s+measurements\)\s*\{([\s\S]*?)\}",
               lambda m: (
                   "foreach (var m in measurements)\n            {\n"
                   + re.sub(r"if\s*\(\s*!_noFitFiles\s*\)", "if (!effectiveNoFitFiles)", m.group(1), flags=re.S)
-                    .replace("await UploadToGarminAsync(m, _garminUsername, _garminPassword);",
-                             "if (_exportOnly) { continue; }\n                await UploadToGarminAsync(m, _garminUsername, _garminPassword);")
+                        .replace("await UploadToGarminAsync", "if (_exportOnly || Environment.GetEnvironmentVariable(\"RGS_EXPORT_ONLY\") == \"1\") { continue; }\n                await UploadToGarminAsync")
                   + "\n            }"
               ),
               s, count=1
+          )
+
+          # Hard no-op inside UploadToGarminAsync as an extra guard
+          s = re.sub(
+              r"(async\s+Task\s+UploadToGarminAsync\s*\([^)]*\)\s*\{)",
+              r"\\1\n            if (_exportOnly || Environment.GetEnvironmentVariable(\"RGS_EXPORT_ONLY\") == \"1\") return;",
+              s
           )
 
           p.write_text(s, encoding="utf-8")
