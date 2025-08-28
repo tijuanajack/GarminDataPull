@@ -10,7 +10,7 @@ on:
 
 env:
   CACHE_DIR: ${{ github.workspace }}/garmin_agent/data
-  RGS_EXPORT_ONLY: "1"   # belt-and-suspenders guard
+  RGS_EXPORT_ONLY: "1"   # hard guard to disable any Garmin upload
 
 jobs:
   export_only:
@@ -58,7 +58,7 @@ jobs:
                           await h.InvokeAsync();
                       }, renphoUser, renphoPass);
 
-                      // auth garmin (unused in export-only flow, but keep command intact)
+                      // auth garmin (kept for completeness; unused in export-only flow)
                       var garmin = new Command("garmin", "Authenticate with Garmin");
                       var garminUser = new Option<string>("--u") { IsRequired = true };
                       var garminPass = new Option<string?>("--pw");
@@ -104,34 +104,28 @@ jobs:
                       }, gu, gpw, ru, rpw, rprofile, dryRun, noFitFiles, exportOnly);
 
                       root.AddCommand(sync);
-
                       return await root.InvokeAsync(args);
                   }
               }
           }
           CS
 
-      - name: Patch handler to honor --export-only and no-op uploader
+      - name: Patch handler to honor --export-only
         working-directory: rgs
         run: |
           python - <<'PY'
           import re, pathlib
-
           p = pathlib.Path("RenphoGarminSync.Console/RenphoGarminSyncCommandHandler.cs")
           s = p.read_text(encoding="utf-8")
 
-          # Ensure we can use Environment in the file
-          if "using System;" not in s.splitlines()[0:20]:
-              s = "using System;\n" + s
-
-          # Add _exportOnly field
+          # add field
           if "_exportOnly" not in s:
               s = s.replace(
                   "private readonly bool _noFitFiles;",
                   "private readonly bool _noFitFiles;\n        private readonly bool _exportOnly;"
               )
 
-          # Extend constructor signature to include exportOnly
+          # extend constructor signature and assign
           s = re.sub(
               r"public\s+RenphoGarminSyncCommandHandler\(([^)]*?)\)\s*\{",
               r"public RenphoGarminSyncCommandHandler(\1, bool exportOnly)\n        {",
@@ -143,34 +137,60 @@ jobs:
                   "_noFitFiles = noFitFiles;\n            _exportOnly = exportOnly;"
               )
 
-          # At top of InvokeAsync establish effectiveNoFitFiles and relax Garmin requirement
+          # effectiveNoFitFiles at top of InvokeAsync
           if "effectiveNoFitFiles" not in s:
               s = s.replace(
                   "public async Task<int> InvokeAsync()\n        {",
                   "public async Task<int> InvokeAsync()\n        {\n            var effectiveNoFitFiles = _exportOnly || (Environment.GetEnvironmentVariable(\"RGS_EXPORT_ONLY\") == \"1\") ? false : _noFitFiles;"
               )
+
+          # require Garmin only when not export-only
           if "Garmin username/email is required unless --export-only is set." not in s:
               s = s.replace(
                   "var renpho = new RenphoApi();",
                   "if (!(_exportOnly || Environment.GetEnvironmentVariable(\"RGS_EXPORT_ONLY\") == \"1\") && string.IsNullOrWhiteSpace(_garminUsername))\n                throw new ArgumentException(\"Garmin username/email is required unless --export-only is set.\");\n\n            var renpho = new RenphoApi();"
               )
 
-          # Force SaveFitFileAsync to run based on effectiveNoFitFiles and skip upload entirely when export-only
+          # ensure we save FIT using effectiveNoFitFiles and skip upload when export-only
           s = re.sub(
               r"foreach\s*\(var\s+m\s+in\s+measurements\)\s*\{([\s\S]*?)\}",
               lambda m: (
                   "foreach (var m in measurements)\n            {\n"
                   + re.sub(r"if\s*\(\s*!_noFitFiles\s*\)", "if (!effectiveNoFitFiles)", m.group(1), flags=re.S)
-                        .replace("await UploadToGarminAsync", "if (_exportOnly || Environment.GetEnvironmentVariable(\"RGS_EXPORT_ONLY\") == \"1\") { continue; }\n                await UploadToGarminAsync")
+                    .replace("await UploadToGarminAsync(m, _garminUsername, _garminPassword);",
+                             "if (_exportOnly || Environment.GetEnvironmentVariable(\"RGS_EXPORT_ONLY\") == \"1\") { continue; }\n                await UploadToGarminAsync(m, _garminUsername, _garminPassword);")
                   + "\n            }"
               ),
               s, count=1
           )
 
-          # Hard no-op inside UploadToGarminAsync as an extra guard
+          p.write_text(s, encoding="utf-8")
+          print("Patched", p)
+          PY
+
+      - name: Patch GarminApi to no-op UploadActivity when export-only
+        working-directory: rgs
+        run: |
+          python - <<'PY'
+          import re, pathlib
+          p = pathlib.Path("RenphoGarminSync.Garmin.Api/GarminApi.cs")
+          s = p.read_text(encoding="utf-8")
+
+          # Ensure System is imported
+          if "using System;" not in s:
+              s = "using System;\n" + s
+
+          # Short-circuit the byte[] overload
           s = re.sub(
-              r"(async\s+Task\s+UploadToGarminAsync\s*\([^)]*\)\s*\{)",
-              r"\\1\n            if (_exportOnly || Environment.GetEnvironmentVariable(\"RGS_EXPORT_ONLY\") == \"1\") return;",
+              r"(public\s+async\s+Task\s+UploadActivity\s*\(\s*string\s+fileName\s*,\s*Byte\[\]\s*content\s*\)\s*\{)",
+              r"\\1\n            if (Environment.GetEnvironmentVariable(\"RGS_EXPORT_ONLY\") == \"1\") return;",
+              s
+          )
+
+          # Also short-circuit a possible Stream overload, if present
+          s = re.sub(
+              r"(public\s+async\s+Task\s+UploadActivity\s*\(\s*string\s+fileName\s*,\s*System\.IO\.Stream\s+content\s*\)\s*\{)",
+              r"\\1\n            if (Environment.GetEnvironmentVariable(\"RGS_EXPORT_ONLY\") == \"1\") return;",
               s
           )
 
