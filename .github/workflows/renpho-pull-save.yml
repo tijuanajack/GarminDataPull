@@ -35,4 +35,132 @@ jobs:
         env:
           RENPHO_EMAIL:    ${{ secrets.RENPHO_EMAIL }}
           RENPHO_PASSWORD: ${{ secrets.RENPHO_PASSWORD }}
-          RENPHO_USER_ID:  ${{ secrets.R_enphon_user_id }} # opt_
+          RENPHO_USER_ID:  ${{ secrets.R_enphon_user_id }} # optional, if you have one
+          PROFILE_NAME:    ${{ github.event.inputs.renpho_profile }}
+          SINCE_DAYS:      ${{ github.event.inputs.since_days }}
+        run: |
+          import os, sys, json, datetime as dt
+          import requests
+          from tabulate import tabulate
+
+          email = os.environ.get("RENPHO_EMAIL")
+          password = os.environ.get("RENPHO_PASSWORD")
+          user_id_override = os.environ.get("RENPHO_USER_ID")
+          profile_name = os.environ.get("PROFILE_NAME") or "TJ-Ath"
+          since_days = int(os.environ.get("SINCE_DAYS") or "30")
+
+          if not email or not password:
+            print("Missing RENPHO_EMAIL or RENPHO_PASSWORD secrets", file=sys.stderr)
+            sys.exit(1)
+
+          session = requests.Session()
+          session.headers.update({
+            "User-Agent": "gh-actions/renpho-pull",
+            "Accept": "application/json",
+          })
+
+          def try_auth(scheme, with_secure_flag):
+            url = f"{scheme}://renpho.qnclouds.com/api/v3/users/sign_in.json"
+            params = {"app_id": "Renpho"}
+            data = {"email": email, "password": password}
+            if with_secure_flag:
+              data["secure_flag"] = 0  # 0 means plain password
+            try:
+              r = session.post(url, params=params, data=data, timeout=30)
+              if r.status_code == 200:
+                j = r.json()
+                key = j.get("terminal_user_session_key")
+                if key:
+                  return key
+            except Exception:
+              pass
+            return None
+
+          # Try 4 auth variants that work with the legacy API
+          key = None
+          for scheme in ("https", "http"):
+            for secure in (False, True):  # no secure_flag, then secure_flag=0
+              key = try_auth(scheme, secure)
+              if key:
+                break
+            if key:
+              break
+
+          if not key:
+            print("Auth failed against legacy Renpho API after multiple variants", file=sys.stderr)
+            sys.exit(2)
+
+          # Resolve scale user
+          if user_id_override:
+            scale_user_id = user_id_override
+          else:
+            users_url = "https://renpho.qnclouds.com/api/v3/scale_users/list_scale_user"
+            r = session.get(users_url, params={"locale":"en","terminal_user_session_key":key}, timeout=30)
+            r.raise_for_status()
+            payload = r.json() or {}
+            scale_users = payload.get("scale_users") or payload.get("scale_user") or []
+            if not isinstance(scale_users, list) or not scale_users:
+              print(f"No scale users found.\nResponse: {json.dumps(payload, indent=2)}", file=sys.stderr)
+              sys.exit(3)
+
+            match = None
+            for u in scale_users:
+              nick = str(u.get("nickname") or u.get("name") or "").strip()
+              if nick.lower() == profile_name.strip().lower():
+                match = u
+                break
+            target = match or scale_users[0]
+            scale_user_id = str(target.get("user_id") or target.get("id"))
+
+          # Pull recent measurements
+          last_at = int((dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=since_days)).timestamp())
+          meas_url = "https://renpho.qnclouds.com/api/v2/measurements/list.json"
+          r = session.get(meas_url, params={
+              "user_id": scale_user_id,
+              "last_at": last_at,
+              "locale": "en",
+              "app_id": "Renpho",
+              "terminal_user_session_key": key
+          }, timeout=45)
+          r.raise_for_status()
+          data = r.json()
+          items = data.get("last_ary") or data.get("measurements") or []
+          if not items:
+            print("No measurements returned. Increase since_days.", file=sys.stderr)
+            sys.exit(4)
+
+          # Sort newest first
+          items.sort(key=lambda x: x.get("time_stamp", 0), reverse=True)
+          last = items[0]
+
+          # Save raw JSON
+          with open("renpho_last.json", "w") as f:
+            json.dump(last, f, indent=2, ensure_ascii=False)
+
+          def g(k):
+            v = last.get(k)
+            return None if v in ("", "null", None) else v
+
+          rows = [
+            ("timestamp",              g("time_stamp")),
+            ("weight_kg",              g("weight")),
+            ("bmi",                    g("bmi")),
+            ("body_fat_%",             g("bodyfat")),
+            ("water_%",                g("water")),
+            ("muscle_%",               g("muscle")),
+            ("skeletal_muscle_%",      g("skeletal_muscle_rate") or g("skeletal_muscle")),
+            ("bone_mass",              g("bone")),
+            ("visceral_fat_level",     g("visfat")),
+            ("bmr_kcal_day",           g("bmr") or g("basal_metabolism")),
+            ("metabolic_age",          g("bodyage")),
+            ("protein_%",              g("protein")),
+          ]
+          print("\nRenpho last measurement (raw saved to renpho_last.json)\n")
+          print(tabulate(rows, headers=["Metric", "Value"], tablefmt="github"))
+
+      - name: Upload raw JSON
+        uses: actions/upload-artifact@v4
+        with:
+          name: renpho-last-json
+          path: renpho_last.json
+          if-no-files-found: error
