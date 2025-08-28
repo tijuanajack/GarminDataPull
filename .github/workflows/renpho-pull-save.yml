@@ -6,6 +6,7 @@ on:
 jobs:
   tj_ath_fit_dump_guarded:
     runs-on: ubuntu-latest
+
     env:
       CACHE_DIR: ${{ github.workspace }}/garmin_agent/data
 
@@ -31,22 +32,23 @@ jobs:
             -o ./publish
           ls -la ./publish
 
+      # IMPORTANT: use an unquoted heredoc so $GITHUB_WORKSPACE expands in the file
       - name: Configure cache path to garmin_agent/data
         run: |
           set -eux
           mkdir -p "${CACHE_DIR}"
           mkdir -p "${HOME}/Documents/GarminRenphoSync"
 
-          # Config beside the binary
-          cat > "${GITHUB_WORKSPACE}/rgs/config.json" <<'JSON'
+          # Config beside the binary (expanded path)
+          cat > "${GITHUB_WORKSPACE}/rgs/config.json" <<JSON
           {
             "UseDefaultCachePath": false,
             "CustomCachePath": "${GITHUB_WORKSPACE}/garmin_agent/data"
           }
           JSON
 
-          # Also write to default Documents location
-          cat > "${HOME}/Documents/GarminRenphoSync/config.json" <<'JSON'
+          # Also write to default Documents location (belt-and-suspenders)
+          cat > "${HOME}/Documents/GarminRenphoSync/config.json" <<JSON
           {
             "UseDefaultCachePath": false,
             "CustomCachePath": "${GITHUB_WORKSPACE}/garmin_agent/data"
@@ -62,48 +64,40 @@ jobs:
         working-directory: rgs
         run: ./publish/rgs auth renpho --u "${{ secrets.RENPHO_EMAIL }}" --pw "${{ secrets.RENPHO_PASSWORD }}"
 
-      # Real sync required to produce FITs. We use your Garmin secrets.
-      # We kill the process immediately once a FIT appears to minimize upload risk.
+      # Real sync (no --gmfa). Kill as soon as a FIT appears to minimize upload risk.
       - name: Sync to create a FIT then kill quickly
         working-directory: rgs
         env:
           GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
           GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
-          GARMIN_MFA_CODE: ${{ secrets.GARMIN_MFA_CODE }}
           RENPHO_EMAIL: ${{ secrets.RENPHO_EMAIL }}
           RENPHO_PASSWORD: ${{ secrets.RENPHO_PASSWORD }}
         run: |
           set -euxo pipefail
           rm -f "${CACHE_DIR}/"*.fit || true
 
-          # Build command with optional MFA code
-          CMD=(./publish/rgs sync
-               --gu "${GARMIN_EMAIL}"
-               --gpw "${GARMIN_PASSWORD}"
-               --ru "${RENPHO_EMAIL}"
-               --rpw "${RENPHO_PASSWORD}"
-               --renphoProfile "TJ-Ath")
-          if [ -n "${GARMIN_MFA_CODE:-}" ]; then
-            CMD+=(--gmfa "${GARMIN_MFA_CODE}")
-          fi
-
-          # Start sync in background
-          "${CMD[@]}" &
+          # Start sync in the background
+          ./publish/rgs sync \
+            --gu "${GARMIN_EMAIL}" \
+            --gpw "${GARMIN_PASSWORD}" \
+            --ru "${RENPHO_EMAIL}" \
+            --rpw "${RENPHO_PASSWORD}" \
+            --renphoProfile "TJ-Ath" &
           RGS_PID=$!
 
           # Poll up to 120s for a FIT file, then kill the sync
-          for i in $(seq 1 120); do
+          for _ in $(seq 1 120); do
             if ls "${CACHE_DIR}/"*.fit >/dev/null 2>&1; then
               echo "FIT detected in ${CACHE_DIR}. Terminating rgs PID=${RGS_PID}"
-              kill $RGS_PID || true
+              kill "${RGS_PID}" || true
               sleep 2
-              kill -9 $RGS_PID || true
+              kill -9 "${RGS_PID}" || true
               break
             fi
             sleep 1
           done
 
-          echo "== Cached FITs =="
+          echo "== Cached files =="
           ls -la "${CACHE_DIR}" || true
 
       - name: Setup Python
@@ -134,9 +128,7 @@ jobs:
           ff = FitFile(latest)
           lines = []
           lines.append(f"# All fields from FIT: {os.path.basename(latest)}")
-          idx = 0
-          for msg in ff.get_messages():
-            idx += 1
+          for i, msg in enumerate(ff.get_messages(), 1):
             vals = {}
             try:
               vals = {f.name: f.value for f in msg}
@@ -146,7 +138,7 @@ jobs:
                   vals[field.name] = field.value
                 except Exception:
                   vals[field.name] = None
-            lines.append(f"\n## Message {idx}: {msg.name}")
+            lines.append(f"\n## Message {i}: {msg.name}")
             for k, v in vals.items():
               lines.append(f"- {k}: {v}")
 
