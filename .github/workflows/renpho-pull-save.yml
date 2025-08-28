@@ -2,6 +2,11 @@ name: TJ-Ath to garmin_agent/data (dump all FIT fields)
 
 on:
   workflow_dispatch:
+    inputs:
+      mfa_code:
+        description: 'Garmin MFA code (leave blank if tokens already cached)'
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -40,11 +45,21 @@ jobs:
           sudo apt-get update -y
           sudo apt-get install -y jq
 
-      # Patch only the cache path keys. Keep the rest of publish/config.json intact.
+      - name: Prepare cache dir
+        run: mkdir -p "${CACHE_DIR}" "${HOME}/Documents/GarminRenphoSync"
+
+      - name: Restore RGS cache (tokens and FITs)
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CACHE_DIR }}
+          key: rgs-cache-v1-${{ runner.os }}
+          restore-keys: |
+            rgs-cache-v1-
+
+      # Patch only the cache path keys in the published config. Preserve all other settings.
       - name: Configure cache path in publish/config.json
         run: |
           set -eux
-          mkdir -p "${CACHE_DIR}" "${HOME}/Documents/GarminRenphoSync"
           CFG="${GITHUB_WORKSPACE}/rgs/publish/config.json"
           cp "$CFG" "$CFG.bak"
           jq --arg p "${GITHUB_WORKSPACE}/garmin_agent/data" \
@@ -54,23 +69,30 @@ jobs:
           install -D "$CFG" "${HOME}/Documents/GarminRenphoSync/config.json"
           echo "== Effective publish/config.json ==" && cat "$CFG"
 
-      - name: Garmin auth
+      - name: Garmin auth - password
+        working-directory: rgs
+        env:
+          GARMIN_EMAIL:    ${{ secrets.GARMIN_EMAIL }}
+          GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
+        run: ./publish/rgs auth garmin --u "${GARMIN_EMAIL}" --pw "${GARMIN_PASSWORD}"
+
+      - name: Garmin auth - MFA (from input if provided)
         working-directory: rgs
         env:
           GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
-          GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
-          GARMIN_MFA_CODE: ${{ secrets.GARMIN_MFA_CODE }}
+          MFA_INPUT:   ${{ github.event.inputs.mfa_code }}
         run: |
           set -eux
-          ./publish/rgs auth garmin --u "${GARMIN_EMAIL}" --pw "${GARMIN_PASSWORD}"
-          if [ -n "${GARMIN_MFA_CODE:-}" ]; then
-            ./publish/rgs auth garmin --u "${GARMIN_EMAIL}" --mfa "${GARMIN_MFA_CODE}"
+          if [ -n "${MFA_INPUT:-}" ]; then
+            ./publish/rgs auth garmin --u "${GARMIN_EMAIL}" --mfa "${MFA_INPUT}"
+          else
+            echo "No MFA code provided, skipping MFA step."
           fi
 
       - name: Renpho auth (TJ-Ath)
         working-directory: rgs
         env:
-          RENPHO_EMAIL: ${{ secrets.RENPHO_EMAIL }}
+          RENPHO_EMAIL:    ${{ secrets.RENPHO_EMAIL }}
           RENPHO_PASSWORD: ${{ secrets.RENPHO_PASSWORD }}
         run: ./publish/rgs auth renpho --u "${RENPHO_EMAIL}" --pw "${RENPHO_PASSWORD}"
 
@@ -78,10 +100,10 @@ jobs:
       - name: Sync to create a FIT then kill quickly
         working-directory: rgs
         env:
-          GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
-          RENPHO_EMAIL: ${{ secrets.RENPHO_EMAIL }}
+          GARMIN_EMAIL:    ${{ secrets.GARMIN_EMAIL }}
+          RENPHO_EMAIL:    ${{ secrets.RENPHO_EMAIL }}
           RENPHO_PASSWORD: ${{ secrets.RENPHO_PASSWORD }}
-          CACHE_DIR: ${{ env.CACHE_DIR }}
+          CACHE_DIR:       ${{ env.CACHE_DIR }}
         run: |
           set -euxo pipefail
           rm -f "${CACHE_DIR}/"*.fit || true
@@ -97,4 +119,79 @@ jobs:
             if ls "${CACHE_DIR}/"*.fit >/dev/null 2>&1; then
               echo "FIT detected. Terminating rgs PID=${RGS_PID}"
               kill "${RGS_PID}" || true
-              s
+              sleep 2
+              kill -9 "${RGS_PID}" || true
+              break
+            fi
+            sleep 1
+          done
+
+          echo "== Cached files ==" && ls -la "${CACHE_DIR}" || true
+          echo "== Any .fit under workspace =="
+          find "${GITHUB_WORKSPACE}" -type f -name '*.fit' -print || true
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install fitparse
+        run: |
+          python -m pip install --upgrade pip
+          pip install fitparse
+
+      - name: Dump all fields from newest TJ-Ath FIT
+        shell: python
+        run: |
+          import os, glob, sys
+          from fitparse import FitFile
+
+          base = os.path.join(os.environ["GITHUB_WORKSPACE"], "garmin_agent", "data")
+          files = glob.glob(os.path.join(base, "*.fit"))
+          if not files:
+              print("No FIT files found in garmin_agent/data")
+              print("Listing:")
+              for p in glob.glob(os.path.join(base, "*")):
+                  print(" -", os.path.basename(p))
+              sys.exit(1)
+
+          latest = max(files, key=os.path.getmtime)
+          print(f"Using latest FIT: {latest}")
+
+          ff = FitFile(latest)
+          lines = [f"# All fields from FIT: {os.path.basename(latest)}"]
+          for i, msg in enumerate(ff.get_messages(), 1):
+              vals = {}
+              try:
+                  vals = {f.name: f.value for f in msg}
+              except Exception:
+                  for field in msg.fields:
+                      try:
+                          vals[field.name] = field.value
+                      except Exception:
+                          vals[field.name] = None
+              lines.append(f"\n## Message {i}: {msg.name}")
+              for k, v in vals.items():
+                  lines.append(f"- {k}: {v}")
+
+          with open("tj_ath_last_fit_all_fields.md", "w", encoding="utf-8") as f:
+              f.write("\n".join(lines))
+          print("\n".join(lines[:2000]))
+
+      - name: Upload FIT and dump
+        uses: actions/upload-artifact@v4
+        with:
+          name: tj-ath-fit-and-dump
+          path: |
+            garmin_agent/data
+            tj_ath_last_fit_all_fields.md
+          if-no-files-found: warn
+
+      - name: Save RGS cache
+        if: always()
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CACHE_DIR }}
+          key: rgs-cache-v1-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            rgs-cache-v1-
