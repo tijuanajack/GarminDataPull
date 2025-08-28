@@ -1,4 +1,4 @@
-!pip install git+https://github.com/cyberjunky/python-garminconnect.git
+
 from google.colab import drive
 import os, json
 from datetime import datetime, timedelta
