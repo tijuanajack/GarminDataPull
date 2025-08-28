@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        profile: [ "TJ-Ath", "TJ-Standard" ]   # update if logs show different names
+        profile: [ "TJ-Ath", "TJ-Standard" ]
     steps:
       - uses: actions/checkout@v4
 
@@ -30,17 +30,6 @@ jobs:
       - name: Clone RenphoGarminSync-CLI
         run: git clone https://github.com/forkerer/RenphoGarminSync-CLI.git rgs
 
-      - name: Write config.json pointing to profile cache
-        working-directory: rgs
-        run: |
-          mkdir -p "${{ github.workspace }}/rgs-cache-${{ matrix.profile }}"
-          cat > config.json << 'JSON'
-          {
-            "UseDefaultCachePath": false,
-            "CustomCachePath": "${{ github.workspace }}/rgs-cache-${{ matrix.profile }}"
-          }
-          JSON
-
       - name: Publish CLI
         working-directory: rgs
         run: |
@@ -51,11 +40,24 @@ jobs:
             -o ./publish
           ls -la ./publish
 
+      - name: Write config.json to default Documents path
+        run: |
+          DOCS="${HOME}/Documents/GarminRenphoSync"
+          mkdir -p "$DOCS"
+          # Point the app’s cache to a per-profile folder under the repo.
+          cat > "$DOCS/config.json" <<'JSON'
+          {
+            "UseDefaultCachePath": false,
+            "CustomCachePath": "${{ github.workspace }}/rgs-cache-${{ matrix.profile }}"
+          }
+          JSON
+          echo "Wrote $DOCS/config.json"
+          cat "$DOCS/config.json" || true
+
       - name: Renpho auth (${{ matrix.profile }})
         working-directory: rgs
         run: ./publish/rgs auth renpho --u "${{ secrets.RENPHO_EMAIL }}" --pw "${{ secrets.RENPHO_PASSWORD }}"
 
-      # Preflight: list profiles in logs. Keeps it read-only.
       - name: Discover Renpho profiles (logs only)
         working-directory: rgs
         continue-on-error: true
@@ -66,7 +68,7 @@ jobs:
             --dry-run || true
 
       # Create FIT files but prevent Garmin upload by using bad Garmin creds.
-      # The command will likely exit non-zero due to Garmin login failure. We swallow it.
+      # The command will exit non-zero due to Garmin login failure; we allow that.
       - name: Generate FIT files (no Garmin upload)
         working-directory: rgs
         continue-on-error: true
@@ -76,20 +78,25 @@ jobs:
             --ru "${{ secrets.RENPHO_EMAIL }}" --rpw "${{ secrets.RENPHO_PASSWORD }}" \
             --renphoProfile "${{ matrix.profile }}" || true
 
-      - name: List generated FIT files (${{ matrix.profile }})
-        if: always()
+      - name: List generated FIT files - custom cache (${{ matrix.profile }})
         run: |
           echo "=== rgs-cache-${{ matrix.profile }} FIT files ==="
           find "rgs-cache-${{ matrix.profile }}" -type f -name '*.fit' -maxdepth 6 -print || true
 
-      - name: Upload profile artifact (${{ matrix.profile }})
+      - name: List generated FIT files - default Documents
+        run: |
+          echo "=== ${HOME}/Documents/GarminRenphoSync FIT files ==="
+          find "${HOME}/Documents/GarminRenphoSync" -type f -name '*.fit' -maxdepth 6 -print || true
+
+      - name: Upload profile artifacts (${{ matrix.profile }})
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: renpho-${{ matrix.profile }}-fit-and-cache
           path: |
             rgs-cache-${{ matrix.profile }}
-            rgs/config.json
+            ${HOME}/Documents/GarminRenphoSync
+            ${HOME}/Documents/GarminRenphoSync/config.json
 
   display:
     if: ${{ always() }}
@@ -105,7 +112,7 @@ jobs:
           echo "=== artifacts tree ==="
           find artifacts -maxdepth 3 -type d -print || true
           echo "=== files ==="
-          find artifacts -maxdepth 4 -type f -print || true
+          find artifacts -maxdepth 5 -type f -print || true
 
       - uses: actions/setup-python@v5
         with:
@@ -130,52 +137,60 @@ jobs:
           base = os.path.abspath("artifacts")
           profiles = ["TJ-Ath", "TJ-Standard"]
 
+          # search both custom cache and default Documents locations
+          def candidate_dirs(profile):
+            return [
+              os.path.join(base, f"renpho-{profile}-fit-and-cache", f"rgs-cache-{profile}"),
+              os.path.join(base, f"renpho-{profile}-fit-and-cache", "GarminRenphoSync"),
+            ]
+
           def get(d, *names, cast=float):
-              for n in names:
-                  if n in d and d[n] is not None:
-                      try:
-                          return cast(d[n])
-                      except Exception:
-                          return d[n]
-              return None
+            for n in names:
+              if n in d and d[n] is not None:
+                try:
+                  return cast(d[n])
+                except Exception:
+                  return d[n]
+            return None
 
           def parse_latest(profile):
-              fit_dir = os.path.join(base, f"renpho-{profile}-fit-and-cache", f"rgs-cache-{profile}")
-              fits = glob.glob(os.path.join(fit_dir, "**", "*.fit"), recursive=True)
-              latest = None
-              latest_ts = None
-              for path in fits:
-                  try:
-                      ff = FitFile(path)
-                      record, ts = {}, None
-                      for m in ff.get_messages():
-                          data = {f.name: f.value for f in m}
-                          if "timestamp" in data and data["timestamp"] is not None:
-                              ts = data["timestamp"]
-                          record.update(data)
-                      if ts is not None and (latest_ts is None or ts > latest_ts):
-                          latest_ts = ts
-                          latest = (os.path.basename(path), record, ts)
-                  except Exception:
-                      continue
-              if not latest:
-                  return None
-              fname, record, ts = latest
-              return {
-                  "profile": profile,
-                  "source_fit": fname,
-                  "timestamp_utc": ts.astimezone(timezone.utc),
-                  "weight_kg": get(record, "weight", "body_weight", "weight_kg"),
-                  "bmi": get(record, "bmi"),
-                  "body_fat_pct": get(record, "body_fat_percentage", "percent_fat", "body_fat"),
-                  "body_water_pct": get(record, "hydration_percentage", "body_water", "percent_hydration"),
-                  "muscle_mass_kg": get(record, "muscle_mass", "muscle_mass_kg"),
-                  "skeletal_muscle_pct": get(record, "skeletal_muscle_percentage", "skeletal_muscle"),
-                  "bone_mass_kg": get(record, "bone_mass", "bone_mass_kg"),
-                  "visceral_fat_rating": get(record, "visceral_fat_rating", "visceral_fat"),
-                  "bmr_kcal": get(record, "basal_met", "bmr", "basal_metabolic_rate"),
-                  "metabolic_age": get(record, "metabolic_age"),
-              }
+            fits = []
+            for d in candidate_dirs(profile):
+              fits += glob.glob(os.path.join(d, "**", "*.fit"), recursive=True)
+            latest = None
+            latest_ts = None
+            for path in fits:
+              try:
+                ff = FitFile(path)
+                record, ts = {}, None
+                for m in ff.get_messages():
+                  data = {f.name: f.value for f in m}
+                  if "timestamp" in data and data["timestamp"] is not None:
+                    ts = data["timestamp"]
+                  record.update(data)
+                if ts is not None and (latest_ts is None or ts > latest_ts):
+                  latest_ts = ts
+                  latest = (os.path.basename(path), record, ts)
+              except Exception:
+                continue
+            if not latest:
+              return None
+            fname, record, ts = latest
+            return {
+              "profile": profile,
+              "source_fit": fname,
+              "timestamp_utc": ts.astimezone(timezone.utc),
+              "weight_kg": get(record, "weight", "body_weight", "weight_kg"),
+              "bmi": get(record, "bmi"),
+              "body_fat_pct": get(record, "body_fat_percentage", "percent_fat", "body_fat"),
+              "body_water_pct": get(record, "hydration_percentage", "body_water", "percent_hydration"),
+              "muscle_mass_kg": get(record, "muscle_mass", "muscle_mass_kg"),
+              "skeletal_muscle_pct": get(record, "skeletal_muscle_percentage", "skeletal_muscle"),
+              "bone_mass_kg": get(record, "bone_mass", "bone_mass_kg"),
+              "visceral_fat_rating": get(record, "visceral_fat_rating", "visceral_fat"),
+              "bmr_kcal": get(record, "basal_met", "bmr", "basal_metabolic_rate"),
+              "metabolic_age": get(record, "metabolic_age"),
+            }
 
           data = {p: parse_latest(p) for p in profiles}
           std = data.get("TJ-Standard")
@@ -185,13 +200,13 @@ jobs:
           w_ath = float(os.getenv("BLEND_ATH_WEIGHT", "0.4"))
 
           def blend(std_val, ath_val):
-              if std_val is None and ath_val is None:
-                  return None
-              if std_val is None:
-                  return round(float(ath_val), 2)
-              if ath_val is None:
-                  return round(float(std_val), 2)
-              return round(w_std * float(std_val) + w_ath * float(ath_val), 2)
+            if std_val is None and ath_val is None:
+              return None
+            if std_val is None:
+              return round(float(ath_val), 2)
+            if ath_val is None:
+              return round(float(std_val), 2)
+            return round(w_std * float(std_val) + w_ath * float(ath_val), 2)
 
           weight_kg = blend(std and std["weight_kg"], ath and ath["weight_kg"])
           bmi = blend(std and std["bmi"], ath and ath["bmi"])
@@ -206,12 +221,12 @@ jobs:
           skeletal_muscle_mass_kg = round(weight_kg * (skeletal_muscle_pct/100.0), 2) if weight_kg and skeletal_muscle_pct else None
 
           def fmt_ts(dct):
-              if not dct or not dct.get("timestamp_utc"):
-                  return "n/a"
-              return dct["timestamp_utc"].astimezone(ZoneInfo("America/Chicago")).strftime("%Y-%m-%d %H:%M:%S %Z")
+            if not dct or not dct.get("timestamp_utc"):
+              return "n/a"
+            return dct["timestamp_utc"].astimezone(ZoneInfo("America/Chicago")).strftime("%Y-%m-%d %H:%M:%S %Z")
 
           def line(label, val):
-              return f"- {label}: {val if val is not None else 'n/a'}"
+            return f"- {label}: {val if val is not None else 'n/a'}"
 
           lines = []
           lines.append("# Renpho body composition summary")
@@ -220,45 +235,45 @@ jobs:
           lines.append("")
 
           for label, d in [("TJ-Standard", std), ("TJ-Ath", ath)]:
-              lines.append(f"## {label}")
-              if not d:
-                  lines.append("No recent FIT found")
-                  lines.append("")
-                  continue
-              lines.extend([
-                  line("Timestamp", fmt_ts(d)),
-                  line("Weight kg", d.get("weight_kg")),
-                  line("BMI", d.get("bmi")),
-                  line("Body Fat %", d.get("body_fat_pct")),
-                  line("Body Water %", d.get("body_water_pct")),
-                  line("Muscle Mass kg", d.get("muscle_mass_kg")),
-                  line("Skeletal Muscle %", d.get("skeletal_muscle_pct")),
-                  line("Bone Mass kg", d.get("bone_mass_kg")),
-                  line("Visceral Fat Rating", d.get("visceral_fat_rating")),
-                  line("BMR kcal/day", d.get("bmr_kcal")),
-                  line("Metabolic Age", d.get("metabolic_age")),
-                  ""
-              ])
+            lines.append(f"## {label}")
+            if not d:
+              lines.append("No recent FIT found")
+              lines.append("")
+              continue
+            lines.extend([
+              line("Timestamp", fmt_ts(d)),
+              line("Weight kg", d.get("weight_kg")),
+              line("BMI", d.get("bmi")),
+              line("Body Fat %", d.get("body_fat_pct")),
+              line("Body Water %", d.get("body_water_pct")),
+              line("Muscle Mass kg", d.get("muscle_mass_kg")),
+              line("Skeletal Muscle %", d.get("skeletal_muscle_pct")),
+              line("Bone Mass kg", d.get("bone_mass_kg")),
+              line("Visceral Fat Rating", d.get("visceral_fat_rating")),
+              line("BMR kcal/day", d.get("bmr_kcal")),
+              line("Metabolic Age", d.get("metabolic_age")),
+              ""
+            ])
 
           lines.append("## Blended metrics")
           lines.extend([
-              line("Weight kg", weight_kg),
-              line("Muscle Mass kg", muscle_mass_kg),
-              line("Skeletal Muscle Mass kg", skeletal_muscle_mass_kg),
-              line("Skeletal Muscle %", skeletal_muscle_pct),
-              line("Bone Mass kg", bone_mass_kg),
-              line("Visceral Fat Rating", visceral_fat_rating),
-              line("Body Fat %", body_fat_pct),
-              line("Body Water %", body_water_pct),
-              line("BMI", bmi),
-              line("Basal Metabolic Rate kcal/day", bmr_kcal),
-              line("Metabolic Age years", metabolic_age),
+            line("Weight kg", weight_kg),
+            line("Muscle Mass kg", muscle_mass_kg),
+            line("Skeletal Muscle Mass kg", skeletal_muscle_mass_kg),
+            line("Skeletal Muscle %", skeletal_muscle_pct),
+            line("Bone Mass kg", bone_mass_kg),
+            line("Visceral Fat Rating", visceral_fat_rating),
+            line("Body Fat %", body_fat_pct),
+            line("Body Water %", body_water_pct),
+            line("BMI", bmi),
+            line("Basal Metabolic Rate kcal/day", bmr_kcal),
+            line("Metabolic Age years", metabolic_age),
           ])
 
           md = "\n".join(lines)
           print("\n" + md + "\n")
           with open("renpho_blended_metrics.md", "w", encoding="utf-8") as f:
-              f.write(md)
+            f.write(md)
 
       - name: Upload summary
         uses: actions/upload-artifact@v4
