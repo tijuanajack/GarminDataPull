@@ -8,13 +8,13 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        profile: [ "tj-ath", "tj-standard" ]   # Edit if your profile names differ
+        profile: [ "TJ-Ath", "TJ-Standard" ]   # Edit if your profile names differ
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '8.0.x'
+          dotnet-version: '8.0x'
 
       - name: Restore cache for ${{ matrix.profile }}
         uses: actions/cache@v4
@@ -170,3 +170,4 @@ jobs:
         with:
           name: renpho-combined-csv
           path: renpho_combined.csv
+
