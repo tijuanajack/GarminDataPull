@@ -1,15 +1,11 @@
-name: Pull Renpho and save FITs (no Garmin upload)
+name: Pull TJ-Ath and display last FIT fields
 
 on:
   workflow_dispatch:
 
 jobs:
-  pull:
+  pull_and_display:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        profile: [ "TJ-Ath", "TJ-Standard" ]
 
     steps:
       - name: Checkout
@@ -33,26 +29,24 @@ jobs:
             -o ./publish
           ls -la ./publish
 
-      # Write config.json in BOTH places the app may read from:
-      # 1) working dir (rgs/)
-      # 2) default Documents path
-      - name: Configure cache paths for profile
+      # Point RGS cache to a workspace folder and also drop a config in the default Documents path
+      - name: Configure cache path
         run: |
           set -eux
-          mkdir -p "${GITHUB_WORKSPACE}/rgs-cache-${{ matrix.profile }}"
+          mkdir -p "${GITHUB_WORKSPACE}/rgs-cache-TJ-Ath"
           mkdir -p "${HOME}/Documents/GarminRenphoSync"
 
           cat > "${GITHUB_WORKSPACE}/rgs/config.json" <<'JSON'
           {
             "UseDefaultCachePath": false,
-            "CustomCachePath": "${GITHUB_WORKSPACE}/rgs-cache-${{ matrix.profile }}"
+            "CustomCachePath": "${GITHUB_WORKSPACE}/rgs-cache-TJ-Ath"
           }
           JSON
 
           cat > "${HOME}/Documents/GarminRenphoSync/config.json" <<'JSON'
           {
             "UseDefaultCachePath": false,
-            "CustomCachePath": "${GITHUB_WORKSPACE}/rgs-cache-${{ matrix.profile }}"
+            "CustomCachePath": "${GITHUB_WORKSPACE}/rgs-cache-TJ-Ath"
           }
           JSON
 
@@ -61,12 +55,14 @@ jobs:
           echo "== Documents/GarminRenphoSync/config.json =="
           cat "${HOME}/Documents/GarminRenphoSync/config.json" || true
 
-      - name: Renpho auth (${{ matrix.profile }})
+      - name: Renpho auth
         working-directory: rgs
         run: ./publish/rgs auth renpho --u "${{ secrets.RENPHO_EMAIL }}" --pw "${{ secrets.RENPHO_PASSWORD }}"
 
-      # Intentionally fail Garmin auth so nothing uploads, but still let Renpho process and write FITs.
-      - name: Generate FIT files (no Garmin upload)
+      # Real processing required to produce FITs.
+      # We intentionally use bogus Garmin creds so nothing uploads.
+      # If the tool errors after writing FITs, continue so we can still parse them.
+      - name: Generate FITs for TJ-Ath (no Garmin upload)
         working-directory: rgs
         continue-on-error: true
         run: |
@@ -75,27 +71,87 @@ jobs:
             --gpw "bad-password" \
             --ru "${{ secrets.RENPHO_EMAIL }}" \
             --rpw "${{ secrets.RENPHO_PASSWORD }}" \
-            --renphoProfile "${{ matrix.profile }}" \
+            --rprofile "TJ-Ath" \
             || true
 
-      # Copy any FITs written to the default Documents path back into workspace cache (belt-and-suspenders)
-      - name: Collect FITs into workspace cache
+      - name: Show possible FIT locations
         run: |
-          set -eux
-          DOCS="${HOME}/Documents/GarminRenphoSync"
-          WS="${GITHUB_WORKSPACE}/rgs-cache-${{ matrix.profile }}"
-          mkdir -p "$WS"
-          if [ -d "$DOCS" ]; then
-            find "$DOCS" -type f -name '*.fit' -print -exec cp -n {} "$WS/" \; || true
-          fi
-          echo "=== Workspace cache contents (${WS}) ==="
-          find "$WS" -maxdepth 2 -type f -name '*.fit' -print || true
+          echo "=== Workspace cache ==="
+          find "${GITHUB_WORKSPACE}/rgs-cache-TJ-Ath" -type f -name '*.fit' -maxdepth 6 -print || true
+          echo "=== Default Documents cache ==="
+          find "${HOME}/Documents/GarminRenphoSync" -type f -name '*.fit' -maxdepth 6 -print || true
 
-      - name: Upload FITs and cache artifact (${{ matrix.profile }})
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install fitparse
+        run: |
+          python -m pip install --upgrade pip
+          pip install fitparse
+
+      # Find the newest TJ-Ath FIT from either cache and print ALL fields
+      - name: Display ALL fields from the last TJ-Ath FIT
+        shell: python
+        run: |
+          import os, glob, sys
+          from datetime import datetime
+          from fitparse import FitFile
+
+          ws_cache = os.path.join(os.environ["GITHUB_WORKSPACE"], "rgs-cache-TJ-Ath")
+          docs_cache = os.path.expanduser("~/Documents/GarminRenphoSync")
+
+          # Gather candidates from common places
+          candidates = []
+          for base in [ws_cache, docs_cache]:
+              for pattern in [
+                os.path.join(base, "**", "*.fit"),
+                os.path.join(base, "fit", "TJ-Ath", "*.fit"),
+                os.path.join(base, "TJ-Ath", "*.fit"),
+              ]:
+                  candidates.extend(glob.glob(pattern, recursive=True))
+
+          if not candidates:
+              print("No FIT files found for TJ-Ath in either cache path.")
+              sys.exit(0)
+
+          latest = max(candidates, key=os.path.getmtime)
+          print(f"Using latest FIT: {latest}")
+
+          ff = FitFile(latest)
+
+          # Dump everything
+          lines = []
+          lines.append(f"# All fields from FIT: {os.path.basename(latest)}")
+          for i, msg in enumerate(ff.get_messages(), 1):
+              try:
+                  vals = {f.name: f.value for f in msg}
+              except Exception:
+                  # Some messages may not support iteration like that
+                  vals = {}
+                  for field in msg.fields:
+                      try:
+                          vals[field.name] = field.value
+                      except Exception:
+                          vals[field.name] = None
+              lines.append(f"\n## Message {i}: {msg.name}")
+              for k, v in vals.items():
+                  lines.append(f"- {k}: {v}")
+
+          dump_path = "tj_ath_last_fit_all_fields.md"
+          with open(dump_path, "w", encoding="utf-8") as f:
+              f.write("\n".join(lines))
+
+          # Also echo summary to logs
+          print("\n".join(lines[:2000]))  # guard log size
+
+      - name: Upload FIT and field dump
         uses: actions/upload-artifact@v4
         with:
-          name: renpho-${{ matrix.profile }}-fit-and-cache
+          name: tj-ath-last-fit-and-dump
           path: |
-            rgs-cache-${{ matrix.profile }}
-            rgs/config.json
+            rgs-cache-TJ-Ath
+            tj_ath_last_fit_all_fields.md
           if-no-files-found: warn
+
