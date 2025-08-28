@@ -1,212 +1,101 @@
-name: pull
+name: Pull Renpho and save FITs (no Garmin upload)
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "17 11 * * *"  # run daily 11:17 UTC
 
 jobs:
   pull:
     runs-on: ubuntu-latest
-
-    env:
-      CACHE_DIR: ${{ github.workspace }}/cache
-      PROFILES: '["TJ-Standard","TJ-Ath"]'
-      BLEND_STD: "0.6"
-      BLEND_ATH: "0.4"
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [ "TJ-Ath", "TJ-Standard" ]
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup .NET
+      - name: Setup .NET 8
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: "8.0.x"
+          dotnet-version: '8.0.x'
 
-      - name: Build RGS
+      - name: Clone RenphoGarminSync-CLI
+        run: git clone https://github.com/forkerer/RenphoGarminSync-CLI.git rgs
+
+      - name: Publish CLI (linux-x64, framework-dependent)
+        working-directory: rgs
+        run: |
+          dotnet publish ./RenphoGarminSync.Console \
+            -c Release \
+            -r linux-x64 \
+            --self-contained false \
+            -o ./publish
+          ls -la ./publish
+
+      # Write config.json in BOTH places the app may read from:
+      # 1) working dir (rgs/)
+      # 2) default Documents path
+      - name: Configure cache paths for profile
         run: |
           set -eux
-          dotnet publish ./rgs/RenphoGarminSync.Console/RenphoGarminSync.Console.csproj -c Release -r linux-x64 --self-contained true -o ./publish
-          ls -lah ./publish
+          mkdir -p "${GITHUB_WORKSPACE}/rgs-cache-${{ matrix.profile }}"
+          mkdir -p "${HOME}/Documents/GarminRenphoSync"
 
-      - name: Sync Renpho -> generate FITs (TJ-Standard)
+          cat > "${GITHUB_WORKSPACE}/rgs/config.json" <<'JSON'
+          {
+            "UseDefaultCachePath": false,
+            "CustomCachePath": "${GITHUB_WORKSPACE}/rgs-cache-${{ matrix.profile }}"
+          }
+          JSON
+
+          cat > "${HOME}/Documents/GarminRenphoSync/config.json" <<'JSON'
+          {
+            "UseDefaultCachePath": false,
+            "CustomCachePath": "${GITHUB_WORKSPACE}/rgs-cache-${{ matrix.profile }}"
+          }
+          JSON
+
+          echo "== rgs/config.json =="
+          cat "${GITHUB_WORKSPACE}/rgs/config.json" || true
+          echo "== Documents/GarminRenphoSync/config.json =="
+          cat "${HOME}/Documents/GarminRenphoSync/config.json" || true
+
+      - name: Renpho auth (${{ matrix.profile }})
+        working-directory: rgs
+        run: ./publish/rgs auth renpho --u "${{ secrets.RENPHO_EMAIL }}" --pw "${{ secrets.RENPHO_PASSWORD }}"
+
+      # Intentionally fail Garmin auth so nothing uploads, but still let Renpho process and write FITs.
+      - name: Generate FIT files (no Garmin upload)
+        working-directory: rgs
+        continue-on-error: true
         run: |
-          set -eux
           ./publish/rgs sync \
-            --gu "${{ secrets.GARMIN_TEST_USER }}" \
-            --gpw "${{ secrets.GARMIN_TEST_PASS }}" \
-            --ru "${{ secrets.RENPHO_USER }}" \
-            --rpw "${{ secrets.RENPHO_PASS }}" \
-            --rprofile "TJ-Standard"
-        # Note: no --dry-run here; FITs are only produced on a real run. README docs. 
-        # Ref: flags and storage location. 
+            --gu "no-upload@example.com" \
+            --gpw "bad-password" \
+            --ru "${{ secrets.RENPHO_EMAIL }}" \
+            --rpw "${{ secrets.RENPHO_PASSWORD }}" \
+            --renphoProfile "${{ matrix.profile }}" \
+            || true
 
-      - name: Sync Renpho -> generate FITs (TJ-Ath)
+      # Copy any FITs written to the default Documents path back into workspace cache (belt-and-suspenders)
+      - name: Collect FITs into workspace cache
         run: |
           set -eux
-          ./publish/rgs sync \
-            --gu "${{ secrets.GARMIN_TEST_USER }}" \
-            --gpw "${{ secrets.GARMIN_TEST_PASS }}" \
-            --ru "${{ secrets.RENPHO_USER }}" \
-            --rpw "${{ secrets.RENPHO_PASS }}" \
-            --rprofile "TJ-Ath"
+          DOCS="${HOME}/Documents/GarminRenphoSync"
+          WS="${GITHUB_WORKSPACE}/rgs-cache-${{ matrix.profile }}"
+          mkdir -p "$WS"
+          if [ -d "$DOCS" ]; then
+            find "$DOCS" -type f -name '*.fit' -print -exec cp -n {} "$WS/" \; || true
+          fi
+          echo "=== Workspace cache contents (${WS}) ==="
+          find "$WS" -maxdepth 2 -type f -name '*.fit' -print || true
 
-      - name: Show cache contents
-        run: |
-          set -eux
-          echo "Default cache root: $HOME/Documents/GarminRenphoSync"
-          find "$HOME/Documents/GarminRenphoSync" -maxdepth 3 -type f -print || true
-
-      - name: Parse latest FITs and display metrics
-        shell: bash
-        run: |
-          set -eux
-          python - << 'PY'
-import os, glob, json, math
-from datetime import datetime
-try:
-    from fitparse import FitFile
-except ImportError:
-    import subprocess, sys
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "fitparse", "pandas"])
-    from fitparse import FitFile
-import pandas as pd
-
-CACHE=os.path.expanduser("~/Documents/GarminRenphoSync")
-profiles=["TJ-Standard","TJ-Ath"]
-def latest_fit(profile):
-    # RGS saves files in profile-named subfolders under the cache; search broadly
-    pats=[
-        os.path.join(CACHE, "fit", profile, "*.fit"),
-        os.path.join(CACHE, profile, "*.fit"),
-        os.path.join(CACHE, "*.fit"),
-    ]
-    files=[]
-    for p in pats:
-        files += glob.glob(p)
-    if not files:
-        return None
-    return max(files, key=os.path.getmtime)
-
-def extract_metrics(fit_path):
-    if not fit_path: return None
-    ff=FitFile(fit_path)
-    out={"fit": os.path.basename(fit_path)}
-    # Common fields seen in Garmin body composition FIT
-    wanted={
-        "weight": "weight",
-        "percent_fat": "body_fat_pct",
-        "percent_hydration": "body_water_pct",
-        "visceral_fat_rating": "visceral_fat_rating",
-        "visceral_fat_mass": "visceral_fat_mass",
-        "muscle_mass": "muscle_mass_kg",
-        "skeletal_muscle_mass": "skeletal_muscle_mass_kg",
-        "bone_mass": "bone_mass_kg",
-        "bmi": "bmi",
-        "basal_met": "bmr",
-        "metabolic_age": "metabolic_age",
-    }
-    ts=None
-    for m in ff.get_messages():
-        if m.name in ("timestamp_correlation","event"): 
-            continue
-        d=m.get_values()
-        if "timestamp" in d and ts is None:
-            ts=d["timestamp"]
-        for k,alias in wanted.items():
-            if k in d and d[k] is not None:
-                out[alias]=d[k]
-    if ts:
-        out["timestamp"]=ts.isoformat()
-    return out
-
-rows=[]
-by_profile={}
-for p in profiles:
-    f=latest_fit(p)
-    metrics=extract_metrics(f) if f else None
-    if metrics:
-        metrics["profile"]=p
-        rows.append(metrics)
-        by_profile[p]=metrics
-
-def to_float(x):
-    try:
-        return float(x)
-    except:
-        return math.nan
-
-# Blend: 60% Standard, 40% Ath
-std=by_profile.get("TJ-Standard")
-ath=by_profile.get("TJ-Ath")
-def blend(a, b):
-    if a is None or b is None: return {}
-    keys=set(a.keys())|set(b.keys())
-    out={"profile":"Blended","timestamp":max(a.get("timestamp",""), b.get("timestamp",""))}
-    for k in keys:
-        if k in ("profile","timestamp","fit"): continue
-        va=to_float(a.get(k))
-        vb=to_float(b.get(k))
-        if math.isnan(va) or math.isnan(vb): 
-            out[k]=None
-        else:
-            out[k]=round(0.6*va+0.4*vb,2)
-    return out
-
-blended=blend(std, ath) if std and ath else {}
-
-def fmt(v, unit=""):
-    if v is None or (isinstance(v,float) and math.isnan(v)): return "n/a"
-    return f"{v}{unit}"
-
-def section(title):
-    print(f"\n## {title}")
-
-print("# Renpho body composition summary\n")
-print("Blend weights: Standard=0.6, Athlete=0.4\n")
-
-for p in profiles:
-    section(p)
-    m=by_profile.get(p)
-    if not m:
-        print("No recent FIT found")
-        continue
-    print(f"Timestamp: {m.get('timestamp','n/a')}")
-    print(f"- Weight kg: {fmt(m.get('weight'),'')}")
-    print(f"- Body Fat %: {fmt(m.get('body_fat_pct'))}")
-    print(f"- Body Water %: {fmt(m.get('body_water_pct'))}")
-    print(f"- Muscle Mass kg: {fmt(m.get('muscle_mass_kg'))}")
-    print(f"- Skeletal Muscle Mass kg: {fmt(m.get('skeletal_muscle_mass_kg'))}")
-    print(f"- Bone Mass kg: {fmt(m.get('bone_mass_kg'))}")
-    print(f"- Visceral Fat Rating: {fmt(m.get('visceral_fat_rating'))}")
-    print(f"- Visceral Fat Mass kg: {fmt(m.get('visceral_fat_mass'))}")
-    print(f"- BMI: {fmt(m.get('bmi'))}")
-    print(f"- Basal Metabolic Rate kcal/day: {fmt(m.get('bmr'))}")
-    print(f"- Metabolic Age years: {fmt(m.get('metabolic_age'))}")
-
-section("Blended metrics")
-if blended:
-    print(f"- Weight kg: {fmt(blended.get('weight'))}")
-    print(f"- Muscle Mass kg: {fmt(blended.get('muscle_mass_kg'))}")
-    print(f"- Skeletal Muscle Mass kg: {fmt(blended.get('skeletal_muscle_mass_kg'))}")
-    print(f"- Skeletal Muscle %: n/a")
-    print(f"- Bone Mass kg: {fmt(blended.get('bone_mass_kg'))}")
-    print(f"- Visceral Fat Rating: {fmt(blended.get('visceral_fat_rating'))}")
-    print(f"- Body Fat %: {fmt(blended.get('body_fat_pct'))}")
-    print(f"- Body Water %: {fmt(blended.get('body_water_pct'))}")
-    print(f"- BMI: {fmt(blended.get('bmi'))}")
-    print(f"- Basal Metabolic Rate kcal/day: {fmt(blended.get('bmr'))}")
-    print(f"- Metabolic Age years: {fmt(blended.get('metabolic_age'))}")
-else:
-    print("Not enough data to compute blend.")
-PY
-
-      - name: Upload cache + FITs
+      - name: Upload FITs and cache artifact (${{ matrix.profile }})
         uses: actions/upload-artifact@v4
         with:
-          name: renpho-fit-and-cache
+          name: renpho-${{ matrix.profile }}-fit-and-cache
           path: |
-            ${{ env.CACHE_DIR }}
-            $HOME/Documents/GarminRenphoSync
+            rgs-cache-${{ matrix.profile }}
+            rgs/config.json
           if-no-files-found: warn
