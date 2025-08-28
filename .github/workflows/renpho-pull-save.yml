@@ -19,9 +19,13 @@ jobs:
           path: rgs-cache
           key: rgs-cache-v1
 
+      - name: Clone RenphoGarminSync-CLI
+        run: git clone https://github.com/forkerer/RenphoGarminSync-CLI.git rgs
+
       - name: Point RGS to custom cache folder
+        working-directory: rgs
         run: |
-          mkdir -p rgs-cache
+          mkdir -p "$GITHUB_WORKSPACE/rgs-cache"
           cat > config.json << 'JSON'
           {
             "UseDefaultCachePath": false,
@@ -30,18 +34,29 @@ jobs:
           JSON
 
       - name: Build CLI
+        working-directory: rgs
         run: |
           dotnet build -c Release
           dotnet publish ./RenphoGarminSync.Console -c Release -r linux-x64 -p:PublishSingleFile=true -p:PublishTrimmed=true -o ./publish
 
       - name: Verify Renpho auth
+        working-directory: rgs
         run: ./publish/rgs auth renpho --u "${{ secrets.RENPHO_EMAIL }}" --pw "${{ secrets.RENPHO_PASSWORD }}"
 
+      # Pull latest entries and WRITE .fit files, but do not upload to Garmin
+      # Garmin flags are required by the CLI. Placeholders are fine here.
       - name: Pull newest and save FIT files (no upload)
+        working-directory: rgs
         run: ./publish/rgs sync \
                --gu "placeholder" --gpw "placeholder" \
                --ru "${{ secrets.RENPHO_EMAIL }}" --rpw "${{ secrets.RENPHO_PASSWORD }}" \
                --dry-run
+
+      - name: List generated files for debug
+        if: always()
+        run: |
+          echo "=== rgs-cache ==="
+          find rgs-cache -maxdepth 2 -type f -printf "%P\n" || true
 
       - name: Upload FIT files and cache
         if: always()
@@ -50,4 +65,4 @@ jobs:
           name: renpho-fit-and-cache
           path: |
             rgs-cache
-            config.json
+            rgs/config.json
