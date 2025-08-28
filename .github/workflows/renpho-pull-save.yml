@@ -8,9 +8,10 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        profile: [ "TJ-Ath", "TJ-Standard" ]
+        profile: [ "tj-ath", "tj-standard" ]   # Edit if your profile names differ
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
@@ -43,6 +44,8 @@ jobs:
             -r linux-x64 \
             --self-contained false \
             -o ./publish
+          echo "=== PUBLISH CONTENTS ==="
+          ls -la ./publish
 
       - name: Renpho auth (${{ matrix.profile }})
         working-directory: rgs
@@ -80,6 +83,13 @@ jobs:
         with:
           path: ./artifacts
 
+      - name: Inspect downloaded artifacts
+        run: |
+          echo "=== artifacts tree ==="
+          find artifacts -maxdepth 3 -type d -print || true
+          echo "=== files ==="
+          find artifacts -maxdepth 4 -type f -print || true
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.x'
@@ -98,50 +108,59 @@ jobs:
           from fitparse import FitFile
 
           base = os.path.abspath("artifacts")
+          profiles = ["tj-ath", "tj-standard"]  # Edit if needed
           rows = []
 
           def get(d, *names, cast=float):
-            for n in names:
-              if n in d and d[n] is not None:
-                try:
-                  return cast(d[n])
-                except Exception:
-                  return d[n]
-            return None
+              for n in names:
+                  if n in d and d[n] is not None:
+                      try:
+                          return cast(d[n])
+                      except Exception:
+                          return d[n]
+              return None
 
-          # detect profile by folder name
-          for profile in ["tj-ath", "tj-standard"]:
-            fit_dir = os.path.join(base, f"renpho-{profile}-fit-and-cache", f"rgs-cache-{profile}")
-            for path in glob.glob(os.path.join(fit_dir, "**", "*.fit"), recursive=True):
-              try:
-                ff = FitFile(path)
-                record, ts = {}, None
-                for m in ff.get_messages():
-                  data = {f.name: f.value for f in m}
-                  if "timestamp" in data and data["timestamp"] is not None:
-                    ts = data["timestamp"]
-                  record.update(data)
+          for profile in profiles:
+              fit_dir = os.path.join(base, f"renpho-{profile}-fit-and-cache", f"rgs-cache-{profile}")
+              fits = glob.glob(os.path.join(fit_dir, "**", "*.fit"), recursive=True)
+              print(f"[{profile}] FIT files found:", len(fits))
+              for path in fits:
+                  try:
+                      ff = FitFile(path)
+                      record, ts = {}, None
+                      for m in ff.get_messages():
+                          data = {f.name: f.value for f in m}
+                          if "timestamp" in data and data["timestamp"] is not None:
+                              ts = data["timestamp"]
+                          record.update(data)
+                      out = {
+                          "profile": profile,
+                          "source_fit": os.path.basename(path),
+                          "timestamp": ts.astimezone(timezone.utc).isoformat() if ts else None,
+                          "weight_kg": get(record, "weight", "body_weight", "weight_kg"),
+                          "bmi": get(record, "bmi"),
+                          "body_fat_pct": get(record, "body_fat_percentage", "percent_fat", "body_fat"),
+                          "body_water_pct": get(record, "hydration_percentage", "body_water", "percent_hydration"),
+                          "muscle_mass_kg": get(record, "muscle_mass", "muscle_mass_kg"),
+                          "skeletal_muscle_pct": get(record, "skeletal_muscle_percentage", "skeletal_muscle"),
+                          "bone_mass_kg": get(record, "bone_mass", "bone_mass_kg"),
+                          "visceral_fat": get(record, "visceral_fat_rating", "visceral_fat"),
+                          "bmr_kcal": get(record, "basal_met", "bmr", "basal_metabolic_rate"),
+                          "metabolic_age": get(record, "metabolic_age"),
+                      }
+                      rows.append(out)
+                  except Exception as e:
+                      rows.append({"profile": profile, "source_fit": os.path.basename(path), "error": str(e)})
 
-                out = {
-                  "profile": profile,
-                  "source_fit": os.path.basename(path),
-                  "timestamp": ts.astimezone(timezone.utc).isoformat() if ts else None,
-                  "weight_kg": get(record, "weight", "body_weight", "weight_kg"),
-                  "bmi": get(record, "bmi"),
-                  "body_fat_pct": get(record, "body_fat_percentage", "percent_fat", "body_fat"),
-                  "body_water_pct": get(record, "hydration_percentage", "body_water", "percent_hydration"),
-                  "muscle_mass_kg": get(record, "muscle_mass", "muscle_mass_kg"),
-                  "skeletal_muscle_pct": get(record, "skeletal_muscle_percentage", "skeletal_muscle"),
-                  "bone_mass_kg": get(record, "bone_mass", "bone_mass_kg"),
-                  "visceral_fat": get(record, "visceral_fat_rating", "visceral_fat"),
-                  "bmr_kcal": get(record, "basal_met", "bmr", "basal_metabolic_rate"),
-                  "metabolic_age": get(record, "metabolic_age"),
-                }
-                rows.append(out)
-              except Exception as e:
-                rows.append({"profile": profile, "source_fit": os.path.basename(path), "error": str(e)})
+          columns = [
+              "profile","source_fit","timestamp","weight_kg","bmi","body_fat_pct",
+              "body_water_pct","muscle_mass_kg","skeletal_muscle_pct","bone_mass_kg",
+              "visceral_fat","bmr_kcal","metabolic_age","error"
+          ]
+          df = pd.DataFrame(rows, columns=columns)
+          if not df.empty:
+              df = df.sort_values(["profile","timestamp"], na_position="last")
 
-          df = pd.DataFrame(rows).sort_values(["profile", "timestamp"], na_position="last")
           out_csv = os.path.abspath("renpho_combined.csv")
           df.to_csv(out_csv, index=False)
           print(f"Wrote {out_csv} with {len(df)} rows")
@@ -151,4 +170,3 @@ jobs:
         with:
           name: renpho-combined-csv
           path: renpho_combined.csv
-
