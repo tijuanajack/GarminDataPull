@@ -62,18 +62,26 @@ jobs:
           echo "== Documents/GarminRenphoSync/config.json =="
           cat "${HOME}/Documents/GarminRenphoSync/config.json"
 
-      - name: Garmin auth (password)
+      - name: Garmin auth
         working-directory: rgs
-        run: ./publish/rgs auth garmin --u "${{ secrets.GARMIN_EMAIL }}" --pw "${{ secrets.GARMIN_PASSWORD }}"
-
-      - name: Garmin auth (MFA code)
-        if: ${{ secrets.GARMIN_MFA_CODE != '' }}
-        working-directory: rgs
-        run: ./publish/rgs auth garmin --u "${{ secrets.GARMIN_EMAIL }}" --mfa "${{ secrets.GARMIN_MFA_CODE }}"
+        env:
+          GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
+          GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
+          GARMIN_MFA_CODE: ${{ secrets.GARMIN_MFA_CODE }}
+        run: |
+          set -euxo pipefail
+          ./publish/rgs auth garmin --u "${GARMIN_EMAIL}" --pw "${GARMIN_PASSWORD}"
+          # Only run MFA if provided
+          if [ -n "${GARMIN_MFA_CODE:-}" ]; then
+            ./publish/rgs auth garmin --u "${GARMIN_EMAIL}" --mfa "${GARMIN_MFA_CODE}"
+          fi
 
       - name: Renpho auth (TJ-Ath)
         working-directory: rgs
-        run: ./publish/rgs auth renpho --u "${{ secrets.RENPHO_EMAIL }}" --pw "${{ secrets.RENPHO_PASSWORD }}"
+        env:
+          RENPHO_EMAIL: ${{ secrets.RENPHO_EMAIL }}
+          RENPHO_PASSWORD: ${{ secrets.RENPHO_PASSWORD }}
+        run: ./publish/rgs auth renpho --u "${RENPHO_EMAIL}" --pw "${RENPHO_PASSWORD}"
 
       # Real sync to produce FITs. Kill as soon as a FIT appears to minimize upload risk.
       - name: Sync to create a FIT then kill quickly
@@ -130,6 +138,10 @@ jobs:
           candidates = glob.glob(os.path.join(base, "*.fit"))
           if not candidates:
             print("No FIT files found in garmin_agent/data")
+            # Show directory to aid debugging
+            print("Listing:")
+            for p in glob.glob(os.path.join(base, "*")):
+              print(" -", os.path.basename(p))
             sys.exit(1)
 
           latest = max(candidates, key=os.path.getmtime)
@@ -166,4 +178,3 @@ jobs:
             garmin_agent/data
             tj_ath_last_fit_all_fields.md
           if-no-files-found: warn
-
