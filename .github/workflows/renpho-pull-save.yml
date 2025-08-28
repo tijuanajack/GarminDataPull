@@ -71,7 +71,7 @@ jobs:
                   print(f"{i:04d}: {line}")
           PY
 
-      - name: Belt and suspenders: short-circuit GarminApi.UploadActivity
+      - name: Belt and suspenders-short-circuit GarminApi.UploadActivity
         working-directory: rgs
         run: |
           python - <<'PY'
@@ -212,3 +212,4 @@ jobs:
             ${{ env.CACHE_DIR }}/*.fit
             ${{ env.CACHE_DIR }}/last_fit_all_fields.json
           if-no-files-found: warn
+
