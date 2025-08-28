@@ -8,7 +8,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        profile: [ "tj-ath", "tj-standard" ]
+        profile: [ "TJ-Ath", "TJ-Standard" ]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -151,3 +151,4 @@ jobs:
         with:
           name: renpho-combined-csv
           path: renpho_combined.csv
+
