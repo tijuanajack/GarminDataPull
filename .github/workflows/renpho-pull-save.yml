@@ -6,7 +6,7 @@ on:
       renpho_profile:
         description: Renpho profile name
         required: true
-        default: "TJ-Ath"
+        default: TJ-Ath
 
 env:
   CACHE_DIR: ${{ github.workspace }}/garmin_agent/data
@@ -32,7 +32,7 @@ jobs:
         working-directory: rgs
         run: git log -1 --pretty=oneline
 
-      - name: Patch console handler to disable all Garmin uploads
+      - name: Patch console handler to disable Garmin upload
         working-directory: rgs
         run: |
           python - <<'PY'
@@ -44,7 +44,7 @@ jobs:
           if "using System.Threading.Tasks;" not in s:
               s = s.replace("using System;", "using System;\nusing System.Threading.Tasks;")
 
-          # Kill every call site
+          # Replace any call to UploadToGarminAsync(...) with a no-op
           s = re.sub(
               r"\bawait\s+UploadToGarminAsync\s*\([^;]*\);",
               "/* export-only: skip upload */ await Task.CompletedTask;",
@@ -56,7 +56,7 @@ jobs:
               s
           )
 
-          # Hard stop inside the method body
+          # Also hard-return at the start of UploadToGarminAsync(...) in case anything slips through
           s = re.sub(
               r"(async\s+Task\s+UploadToGarminAsync\s*\([^)]*\)\s*\{)",
               r"\\1\n            // export-only hard stop\n            return;",
@@ -65,13 +65,13 @@ jobs:
 
           p.write_text(s, encoding="utf-8")
           print("Patched:", p)
-          # Show remaining references
+          # Log any remaining references
           for i, line in enumerate(s.splitlines(), 1):
               if "UploadToGarminAsync" in line:
                   print(f"{i:04d}: {line}")
           PY
 
-      - name: Belt-and-suspenders: short-circuit GarminApi.UploadActivity
+      - name: Belt and suspenders: short-circuit GarminApi.UploadActivity
         working-directory: rgs
         run: |
           python - <<'PY'
@@ -82,7 +82,7 @@ jobs:
           if "using System;" not in s:
               s = "using System;\n" + s
 
-          # Handle byte[] and Byte[] overloads
+          # Short-circuit both byte[] and Byte[] and Stream overloads, if present
           s = re.sub(
               r"(public\s+async\s+Task\s+UploadActivity\s*\(\s*string\s+fileName\s*,\s*byte\[\]\s*content\s*\)\s*\{)",
               r"\\1\n            if (Environment.GetEnvironmentVariable(\"RGS_EXPORT_ONLY\") == \"1\") return;",
@@ -113,10 +113,10 @@ jobs:
         run: |
           set -eux
           mkdir -p "${CACHE_DIR}" "${HOME}/Documents/GarminRenphoSync"
-          cat > rgs/config.json <<EOF
+          cat > rgs/config.json <<'EOF'
           {
             "UseDefaultCachePath": false,
-            "CustomCachePath": "${{ env.CACHE_DIR }}"
+            "CustomCachePath": "${GITHUB_WORKSPACE}/garmin_agent/data"
           }
           EOF
           cp rgs/config.json "${HOME}/Documents/GarminRenphoSync/config.json"
@@ -125,16 +125,16 @@ jobs:
       - name: Renpho auth only
         working-directory: rgs
         env:
-          RENPHO_EMAIL:    ${{ secrets.RENPHO_EMAIL }}
+          RENPHO_EMAIL: ${{ secrets.RENPHO_EMAIL }}
           RENPHO_PASSWORD: ${{ secrets.RENPHO_PASSWORD }}
         run: ./publish/rgs auth renpho --u "${RENPHO_EMAIL}" --pw "${RENPHO_PASSWORD}"
 
-      - name: Export latest FIT to cache (pass dummy --gu, still no Garmin)
+      - name: Export latest FIT to cache (dummy --gu, still no Garmin)
         working-directory: rgs
         env:
-          RENPHO_EMAIL:    ${{ secrets.RENPHO_EMAIL }}
+          RENPHO_EMAIL: ${{ secrets.RENPHO_EMAIL }}
           RENPHO_PASSWORD: ${{ secrets.RENPHO_PASSWORD }}
-          PROFILE:         ${{ github.event.inputs.renpho_profile }}
+          PROFILE: ${{ github.event.inputs.renpho_profile }}
         run: |
           ./publish/rgs sync \
             --gu "skip" \
