@@ -10,7 +10,6 @@ on:
 
 env:
   CACHE_DIR: ${{ github.workspace }}/garmin_agent/data
-  # Optional extra guard. We do not rely on it, but keep it for future use.
   RGS_EXPORT_ONLY: "1"
 
 jobs:
@@ -31,11 +30,9 @@ jobs:
 
       - name: Show CLI revision
         working-directory: rgs
-        run: |
-          git log -1 --pretty=oneline
-          ls -la
+        run: git log -1 --pretty=oneline
 
-      - name: Patch handler to fully disable Garmin upload
+      - name: Patch console handler to disable all Garmin uploads
         working-directory: rgs
         run: |
           python - <<'PY'
@@ -44,26 +41,22 @@ jobs:
           p = pathlib.Path("RenphoGarminSync.Console/RenphoGarminSyncCommandHandler.cs")
           s = p.read_text(encoding="utf-8")
 
-          # Ensure needed usings
           if "using System.Threading.Tasks;" not in s:
               s = s.replace("using System;", "using System;\nusing System.Threading.Tasks;")
 
-          # 1) Nuke every direct call site to UploadToGarminAsync(...)
-          #    Replace "await UploadToGarminAsync(...);" with a harmless no-op that preserves flow.
+          # Kill every call site
           s = re.sub(
               r"\bawait\s+UploadToGarminAsync\s*\([^;]*\);",
               "/* export-only: skip upload */ await Task.CompletedTask;",
               s
           )
-          # Cover rare non-awaited call
           s = re.sub(
               r"(?<!await\s)\bUploadToGarminAsync\s*\([^;]*\);",
               "/* export-only: skip upload */ _ = Task.CompletedTask;",
               s
           )
 
-          # 2) Add a belt-and-suspenders early-return inside the UploadToGarminAsync(...) method body
-          #    We do not replace the whole body. We just inject a top-level 'return;' so any accidental call becomes a no-op.
+          # Hard stop inside the method body
           s = re.sub(
               r"(async\s+Task\s+UploadToGarminAsync\s*\([^)]*\)\s*\{)",
               r"\\1\n            // export-only hard stop\n            return;",
@@ -72,11 +65,42 @@ jobs:
 
           p.write_text(s, encoding="utf-8")
           print("Patched:", p)
-          # Helpful log to confirm patches took effect
-          print("--- grep UploadToGarminAsync occurrences after patch ---")
+          # Show remaining references
           for i, line in enumerate(s.splitlines(), 1):
               if "UploadToGarminAsync" in line:
                   print(f"{i:04d}: {line}")
+          PY
+
+      - name: Belt-and-suspenders: short-circuit GarminApi.UploadActivity
+        working-directory: rgs
+        run: |
+          python - <<'PY'
+          import pathlib, re
+          p = pathlib.Path("RenphoGarminSync.Garmin.Api/GarminApi.cs")
+          s = p.read_text(encoding="utf-8")
+
+          if "using System;" not in s:
+              s = "using System;\n" + s
+
+          # Handle byte[] and Byte[] overloads
+          s = re.sub(
+              r"(public\s+async\s+Task\s+UploadActivity\s*\(\s*string\s+fileName\s*,\s*byte\[\]\s*content\s*\)\s*\{)",
+              r"\\1\n            if (Environment.GetEnvironmentVariable(\"RGS_EXPORT_ONLY\") == \"1\") return;",
+              s
+          )
+          s = re.sub(
+              r"(public\s+async\s+Task\s+UploadActivity\s*\(\s*string\s+fileName\s*,\s*Byte\[\]\s*content\s*\)\s*\{)",
+              r"\\1\n            if (Environment.GetEnvironmentVariable(\"RGS_EXPORT_ONLY\") == \"1\") return;",
+              s
+          )
+          s = re.sub(
+              r"(public\s+async\s+Task\s+UploadActivity\s*\(\s*string\s+fileName\s*,\s*System\.IO\.Stream\s+content\s*\)\s*\{)",
+              r"\\1\n            if (Environment.GetEnvironmentVariable(\"RGS_EXPORT_ONLY\") == \"1\") return;",
+              s
+          )
+
+          p.write_text(s, encoding="utf-8")
+          print("Patched:", p)
           PY
 
       - name: Build CLI
@@ -105,7 +129,7 @@ jobs:
           RENPHO_PASSWORD: ${{ secrets.RENPHO_PASSWORD }}
         run: ./publish/rgs auth renpho --u "${RENPHO_EMAIL}" --pw "${RENPHO_PASSWORD}"
 
-      - name: Export latest FIT to cache (no Garmin)
+      - name: Export latest FIT to cache (pass dummy --gu, still no Garmin)
         working-directory: rgs
         env:
           RENPHO_EMAIL:    ${{ secrets.RENPHO_EMAIL }}
@@ -113,6 +137,7 @@ jobs:
           PROFILE:         ${{ github.event.inputs.renpho_profile }}
         run: |
           ./publish/rgs sync \
+            --gu "skip" \
             --ru "${RENPHO_EMAIL}" \
             --rpw "${RENPHO_PASSWORD}" \
             --renphoProfile "${PROFILE}"
@@ -187,4 +212,3 @@ jobs:
             ${{ env.CACHE_DIR }}/*.fit
             ${{ env.CACHE_DIR }}/last_fit_all_fields.json
           if-no-files-found: warn
-
