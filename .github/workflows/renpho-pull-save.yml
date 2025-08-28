@@ -60,7 +60,7 @@ jobs:
         run: |
           ./publish/rgs sync \
             --gu "placeholder" --gpw "placeholder" \
-            --ru "${{ secrets.RENPHO_EMAIL }}" --rpw "${{ secretsRENPHO_PASSWORD }}" \
+            --ru "${{ secrets.RENPHO_EMAIL }}" --rpw "${{ secrets.RENPHO_PASSWORD }}" \
             --renphoProfile "${{ matrix.profile }}" \
             --dry-run
 
@@ -158,3 +158,4 @@ jobs:
                   "weight_kg": get(record, "weight", "body_weight", "weight_kg"),
                   "bmi": get(record, "bmi"),
                   "body_fat_pct": get(re
+
