@@ -32,8 +32,14 @@ jobs:
 
       - name: Configure custom cache path
         run: |
-          mkdir -p "$CACHE_DIR" "$HOME/Documents/GarminRenphoSync"
-          printf '{\n  "UseDefaultCachePath": false,\n  "CustomCachePath": "%s"\n}\n' "${GITHUB_WORKSPACE}/garmin_agent/data" > rgs/config.json
+          ABS="${GITHUB_WORKSPACE}/garmin_agent/data"
+          mkdir -p "$ABS" "$HOME/Documents/GarminRenphoSync"
+          cat > rgs/config.json <<EOF
+          {
+            "UseDefaultCachePath": false,
+            "CustomCachePath": "$ABS"
+          }
+          EOF
           cp rgs/config.json "$HOME/Documents/GarminRenphoSync/config.json"
           echo "== Effective config.json ==" && cat rgs/config.json
 
@@ -44,7 +50,7 @@ jobs:
           RENPHO_PASSWORD: ${{ secrets.RENPHO_PASSWORD }}
         run: ./publish/rgs auth renpho --u "${RENPHO_EMAIL}" --pw "${RENPHO_PASSWORD}"
 
-      # Important: allow the Garmin failure but keep the job running
+      # Let Garmin fail but continue, FIT should be saved before upload attempt
       - name: Export latest FIT to cache (allow Garmin failure)
         id: rgs_sync
         working-directory: rgs
@@ -55,8 +61,6 @@ jobs:
           PROFILE: ${{ github.event.inputs.renpho_profile }}
         run: |
           set -eux
-          # Provide a dummy Garmin username to satisfy the required flag.
-          # The app will save FIT files before attempting upload, then fail on Garmin auth.
           ./publish/rgs sync --gu placeholder --ru "${RENPHO_EMAIL}" --rpw "${RENPHO_PASSWORD}" --renphoProfile "${PROFILE}" || true
 
       - name: Verify FIT cache
@@ -67,13 +71,22 @@ jobs:
           cnt=$(ls "$CACHE_DIR"/*.fit 2>/dev/null | wc -l || true)
           if [ "$cnt" -eq 0 ]; then
             echo "No FIT files were written to $CACHE_DIR"
-            echo "The CLI may have crashed before writing FITs. Re-run or check Renpho creds/profile name."
+            echo "The CLI may have crashed before writing FITs. Re-run or check Renpho creds and profile name."
             exit 1
           fi
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python deps
+        run: python -m pip install --upgrade pip fitparse
+
       - name: Parse newest FIT and dump fields
+        env:
+          CACHE_DIR: ${{ env.CACHE_DIR }}
         run: |
-          python -m pip install --upgrade pip
           python - <<'PY'
           import os, glob, json
           from fitparse import FitFile
@@ -86,33 +99,48 @@ jobs:
           fit = FitFile(last)
           rows = []
           for msg in fit.get_messages():
-            for f in msg:
-              try:
-                val = f.value
-              except Exception:
-                val = None
-              rows.append({
-                "message": msg.name,
-                "field": f.name,
-                "value": val,
-                "units": getattr(f, "units", None),
-              })
+              for f in msg:
+                  try:
+                      val = f.value
+                  except Exception:
+                      val = None
+                  rows.append({
+                      "message": msg.name,
+                      "field": f.name,
+                      "value": val,
+                      "units": getattr(f, "units", None),
+                  })
 
           wanted = {
-            "weight","bmi","body_fat","body_water","bone_mass","muscle_mass",
-            "visceral_fat","metabolic_age","basal_met","physique_rating",
-            "skeletal_muscle_mass","skeletal_muscle_percent"
+              "weight","bmi","body_fat","body_water","bone_mass","muscle_mass",
+              "visceral_fat","metabolic_age","basal_met","physique_rating",
+              "skeletal_muscle_mass","skeletal_muscle_percent"
           }
+
+          # Print selected fields to logs
           print("\nSelected body-comp fields:")
-          for r in rows:
-            if r["field"] in wanted:
+          selected = [r for r in rows if r["field"] in wanted]
+          for r in selected:
               u = f" {r['units']}" if r.get("units") else ""
               print(f"- {r['field']}: {r['value']}{u}")
 
+          # Save JSON dump of all fields
           out_json = os.path.join(cache, "last_fit_all_fields.json")
           with open(out_json, "w") as f:
-            json.dump(rows, f, indent=2, default=str)
+              json.dump(rows, f, indent=2, default=str)
           print(f"\nSaved: {out_json}")
+
+          # Save a short markdown summary of wanted fields
+          out_md = os.path.join(cache, "last_fit_selected_fields.md")
+          with open(out_md, "w") as f:
+              f.write("# Selected body composition fields\n\n")
+              if selected:
+                  f.write("| field | value | units |\n|---|---:|---|\n")
+                  for r in selected:
+                      f.write(f"| {r['field']} | {r['value']} | {r.get('units','')} |\n")
+              else:
+                  f.write("_No matching fields found in this FIT._\n")
+          print(f"Saved: {out_md}")
           PY
 
       - uses: actions/upload-artifact@v4
@@ -121,4 +149,5 @@ jobs:
           path: |
             ${{ env.CACHE_DIR }}/*.fit
             ${{ env.CACHE_DIR }}/last_fit_all_fields.json
+            ${{ env.CACHE_DIR }}/last_fit_selected_fields.md
           if-no-files-found: warn
