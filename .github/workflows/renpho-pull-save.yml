@@ -1,36 +1,100 @@
-- name: Sync to create a FIT then kill quickly
-  working-directory: rgs
-  env:
-    GARMIN_EMAIL:    ${{ secrets.GARMIN_EMAIL }}
-    RENPHO_EMAIL:    ${{ secrets.RENPHO_EMAIL }}
-    RENPHO_PASSWORD: ${{ secrets.RENPHO_PASSWORD }}
-  run: |
-    set -euxo pipefail
-    CACHE_DIR="${GITHUB_WORKSPACE}/garmin_agent/data"
-    rm -f "${CACHE_DIR}/"*.fit || true
+name: TJ-Ath to garmin_agent/data (dump all FIT fields)
 
-    ./publish/rgs sync \
-      --gu "${GARMIN_EMAIL}" \
-      --ru "${RENPHO_EMAIL}" --rpw "${RENPHO_PASSWORD}" \
-      --renphoProfile "TJ-Ath" &
-    RGS_PID=$!
+on:
+  workflow_dispatch:
 
-    # Wait up to 300s for a FIT to appear
-    for _ in $(seq 1 300); do
-      if ls "${CACHE_DIR}/"*.fit >/dev/null 2>&1; then
-        echo "FIT detected. Terminating rgs PID=${RGS_PID}"
-        kill "${RGS_PID}" || true
-        sleep 2
-        kill -9 "${RGS_PID}" || true
-        break
-      fi
-      sleep 1
-    done
+permissions:
+  contents: read
 
-    echo "== Cached files =="
-    ls -la "${CACHE_DIR}" || true
-    echo "== Workspace tree (first 200 lines) =="
-    find "${GITHUB_WORKSPACE}" -maxdepth 4 -type f | sed -n '1,200p'
-    echo "== Any .fit anywhere under workspace =="
-    find "${GITHUB_WORKSPACE}" -type f -name '*.fit' -print || true
+env:
+  CACHE_DIR: ${{ github.workspace }}/garmin_agent/data
 
+jobs:
+  pull:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Clone RenphoGarminSync-CLI
+        run: git clone https://github.com/forkerer/RenphoGarminSync-CLI.git rgs
+
+      - name: Publish CLI
+        working-directory: rgs
+        run: |
+          dotnet publish ./RenphoGarminSync.Console \
+            -c Release \
+            -r linux-x64 \
+            --self-contained false \
+            -o ./publish
+          echo "== publish contents ==" && ls -la ./publish
+
+      - name: Install jq
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y jq
+
+      # Patch only the cache path keys. Keep the rest of publish/config.json intact.
+      - name: Configure cache path in publish/config.json
+        run: |
+          set -eux
+          mkdir -p "${CACHE_DIR}" "${HOME}/Documents/GarminRenphoSync"
+          CFG="${GITHUB_WORKSPACE}/rgs/publish/config.json"
+          cp "$CFG" "$CFG.bak"
+          jq --arg p "${GITHUB_WORKSPACE}/garmin_agent/data" \
+             '.UseDefaultCachePath=false | .CustomCachePath=$p' \
+             "$CFG" > "${CFG}.tmp"
+          mv "${CFG}.tmp" "$CFG"
+          install -D "$CFG" "${HOME}/Documents/GarminRenphoSync/config.json"
+          echo "== Effective publish/config.json ==" && cat "$CFG"
+
+      - name: Garmin auth
+        working-directory: rgs
+        env:
+          GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
+          GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
+          GARMIN_MFA_CODE: ${{ secrets.GARMIN_MFA_CODE }}
+        run: |
+          set -eux
+          ./publish/rgs auth garmin --u "${GARMIN_EMAIL}" --pw "${GARMIN_PASSWORD}"
+          if [ -n "${GARMIN_MFA_CODE:-}" ]; then
+            ./publish/rgs auth garmin --u "${GARMIN_EMAIL}" --mfa "${GARMIN_MFA_CODE}"
+          fi
+
+      - name: Renpho auth (TJ-Ath)
+        working-directory: rgs
+        env:
+          RENPHO_EMAIL: ${{ secrets.RENPHO_EMAIL }}
+          RENPHO_PASSWORD: ${{ secrets.RENPHO_PASSWORD }}
+        run: ./publish/rgs auth renpho --u "${RENPHO_EMAIL}" --pw "${RENPHO_PASSWORD}"
+
+      # Create a FIT then stop quickly to minimize any uploads
+      - name: Sync to create a FIT then kill quickly
+        working-directory: rgs
+        env:
+          GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
+          RENPHO_EMAIL: ${{ secrets.RENPHO_EMAIL }}
+          RENPHO_PASSWORD: ${{ secrets.RENPHO_PASSWORD }}
+          CACHE_DIR: ${{ env.CACHE_DIR }}
+        run: |
+          set -euxo pipefail
+          rm -f "${CACHE_DIR}/"*.fit || true
+
+          ./publish/rgs sync \
+            --gu "${GARMIN_EMAIL}" \
+            --ru "${RENPHO_EMAIL}" --rpw "${RENPHO_PASSWORD}" \
+            --renphoProfile "TJ-Ath" &
+          RGS_PID=$!
+
+          # Wait up to 300s for a FIT to appear, then kill the sync
+          for _ in $(seq 1 300); do
+            if ls "${CACHE_DIR}/"*.fit >/dev/null 2>&1; then
+              echo "FIT detected. Terminating rgs PID=${RGS_PID}"
+              kill "${RGS_PID}" || true
+              s
