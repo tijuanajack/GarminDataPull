@@ -32,7 +32,6 @@ jobs:
           }
           JSON
 
-      # Publish for linux-x64, framework-dependent, no trimming, not single-file
       - name: Publish CLI
         working-directory: rgs
         run: |
@@ -46,31 +45,13 @@ jobs:
 
       - name: Run Renpho auth
         working-directory: rgs
-        shell: bash
         run: |
-          DLL=""
-          if [ -f ./publish/RenphoGarminSync.Console.dll ]; then
-            DLL=./publish/RenphoGarminSync.Console.dll
-          elif [ -f ./publish/rgs.dll ]; then
-            DLL=./publish/rgs.dll
-          else
-            echo "No expected DLL found. Listing publish dir:" && ls -la ./publish && exit 1
-          fi
-          dotnet "$DLL" auth renpho --u "${{ secrets.RENPHO_EMAIL }}" --pw "${{ secrets.RENPHO_PASSWORD }}"
+          ./publish/rgs auth renpho --u "${{ secrets.RENPHO_EMAIL }}" --pw "${{ secrets.RENPHO_PASSWORD }}"
 
       - name: Pull newest and save FIT files (no upload)
         working-directory: rgs
-        shell: bash
         run: |
-          DLL=""
-          if [ -f ./publish/RenphoGarminSync.Console.dll ]; then
-            DLL=./publish/RenphoGarminSync.Console.dll
-          elif [ -f ./publish/rgs.dll ]; then
-            DLL=./publish/rgs.dll
-          else
-            echo "No expected DLL found. Listing publish dir:" && ls -la ./publish && exit 1
-          fi
-          dotnet "$DLL" sync \
+          ./publish/rgs sync \
             --gu "placeholder" --gpw "placeholder" \
             --ru "${{ secrets.RENPHO_EMAIL }}" --rpw "${{ secrets.RENPHO_PASSWORD }}" \
             --dry-run
