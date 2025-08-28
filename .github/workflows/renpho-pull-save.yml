@@ -1,14 +1,18 @@
-name: Pull Renpho by profile and export CSV (no Garmin)
+name: Pull Renpho and display metrics (no Garmin)
 
 on:
   workflow_dispatch:
+
+env:
+  BLEND_STD_WEIGHT: "0.6"   # adjust if you want a different blend
+  BLEND_ATH_WEIGHT: "0.4"
 
 jobs:
   pull:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        profile: [ "TJ-Ath", "TJ-Standard" ]   # Your exact Renpho profile names
+        profile: [ "TJ-Ath", "TJ-Standard" ]
     steps:
       - uses: actions/checkout@v4
 
@@ -44,7 +48,6 @@ jobs:
             -r linux-x64 \
             --self-contained false \
             -o ./publish
-          echo "=== PUBLISH CONTENTS ==="
           ls -la ./publish
 
       - name: Renpho auth (${{ matrix.profile }})
@@ -57,7 +60,7 @@ jobs:
         run: |
           ./publish/rgs sync \
             --gu "placeholder" --gpw "placeholder" \
-            --ru "${{ secrets.RENPHO_EMAIL }}" --rpw "${{ secrets.RENPHO_PASSWORD }}" \
+            --ru "${{ secrets.RENPHO_EMAIL }}" --rpw "${{ secretsRENPHO_PASSWORD }}" \
             --renphoProfile "${{ matrix.profile }}" \
             --dry-run
 
@@ -75,7 +78,7 @@ jobs:
             rgs-cache-${{ matrix.profile }}
             rgs/config.json
 
-  combine:
+  display:
     runs-on: ubuntu-latest
     needs: pull
     steps:
@@ -99,18 +102,23 @@ jobs:
           python -m pip install --upgrade pip
           pip install fitparse pandas
 
-      - name: Convert FIT to combined CSV
+      - name: Display latest metrics and blended summary
+        env:
+          BLEND_STD_WEIGHT: ${{ env.BLEND_STD_WEIGHT }}
+          BLEND_ATH_WEIGHT: ${{ env.BLEND_ATH_WEIGHT }}
+          TZ: America/Chicago
         shell: python
         run: |
-          import os, glob
+          import os, glob, math, textwrap
           from datetime import timezone
-          import pandas as pd
           from fitparse import FitFile
+          import pytz
+          import pandas as pd
 
           base = os.path.abspath("artifacts")
-          profiles = ["TJ-Ath", "TJ-Standard"]  # Use your exact profile names
-          rows = []
+          profiles = ["TJ-Ath", "TJ-Standard"]
 
+          # Field resolver
           def get(d, *names, cast=float):
               for n in names:
                   if n in d and d[n] is not None:
@@ -120,10 +128,11 @@ jobs:
                           return d[n]
               return None
 
-          for profile in profiles:
+          def parse_latest(profile):
               fit_dir = os.path.join(base, f"renpho-{profile}-fit-and-cache", f"rgs-cache-{profile}")
               fits = glob.glob(os.path.join(fit_dir, "**", "*.fit"), recursive=True)
-              print(f"[{profile}] FIT files found:", len(fits))
+              latest = None
+              latest_ts = None
               for path in fits:
                   try:
                       ff = FitFile(path)
@@ -133,40 +142,19 @@ jobs:
                           if "timestamp" in data and data["timestamp"] is not None:
                               ts = data["timestamp"]
                           record.update(data)
-                      out = {
-                          "profile": profile,
-                          "source_fit": os.path.basename(path),
-                          "timestamp": ts.astimezone(timezone.utc).isoformat() if ts else None,
-                          "weight_kg": get(record, "weight", "body_weight", "weight_kg"),
-                          "bmi": get(record, "bmi"),
-                          "body_fat_pct": get(record, "body_fat_percentage", "percent_fat", "body_fat"),
-                          "body_water_pct": get(record, "hydration_percentage", "body_water", "percent_hydration"),
-                          "muscle_mass_kg": get(record, "muscle_mass", "muscle_mass_kg"),
-                          "skeletal_muscle_pct": get(record, "skeletal_muscle_percentage", "skeletal_muscle"),
-                          "bone_mass_kg": get(record, "bone_mass", "bone_mass_kg"),
-                          "visceral_fat": get(record, "visceral_fat_rating", "visceral_fat"),
-                          "bmr_kcal": get(record, "basal_met", "bmr", "basal_metabolic_rate"),
-                          "metabolic_age": get(record, "metabolic_age"),
-                      }
-                      rows.append(out)
-                  except Exception as e:
-                      rows.append({"profile": profile, "source_fit": os.path.basename(path), "error": str(e)})
-
-          columns = [
-              "profile","source_fit","timestamp","weight_kg","bmi","body_fat_pct",
-              "body_water_pct","muscle_mass_kg","skeletal_muscle_pct","bone_mass_kg",
-              "visceral_fat","bmr_kcal","metabolic_age","error"
-          ]
-          df = pd.DataFrame(rows, columns=columns)
-          if not df.empty:
-              df = df.sort_values(["profile","timestamp"], na_position="last")
-
-          out_csv = os.path.abspath("renpho_combined.csv")
-          df.to_csv(out_csv, index=False)
-          print(f"Wrote {out_csv} with {len(df)} rows")
-
-      - name: Upload combined CSV
-        uses: actions/upload-artifact@v4
-        with:
-          name: renpho-combined-csv
-          path: renpho_combined.csv
+                      if ts is not None and (latest_ts is None or ts > latest_ts):
+                          latest_ts = ts
+                          latest = (os.path.basename(path), record, ts)
+                  except Exception:
+                      continue
+              if not latest:
+                  return None
+              fname, record, ts = latest
+              # Normalize fields
+              out = {
+                  "profile": profile,
+                  "source_fit": fname,
+                  "timestamp_utc": ts.astimezone(timezone.utc),
+                  "weight_kg": get(record, "weight", "body_weight", "weight_kg"),
+                  "bmi": get(record, "bmi"),
+                  "body_fat_pct": get(re
