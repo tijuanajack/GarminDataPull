@@ -40,7 +40,7 @@ jobs:
 
       - name: Verify Renpho auth
         working-directory: rgs
-        run: dotnet run --project ./RenphoGarminSync.Console -- auth renpho --u "${{ secrets.RENPHO_EMAIL }}" --pw "${{ secretsRENPHO_PASSWORD }}"
+        run: dotnet run --project ./RenphoGarminSync.Console -- auth renpho --u "${{ secrets.RENPHO_EMAIL }}" --pw "${{ secrets.RENPHO_PASSWORD }}"
 
       # Pull latest and WRITE .fit files, but no Garmin upload
       - name: Pull newest and save FIT files (no upload)
@@ -64,3 +64,4 @@ jobs:
           path: |
             rgs-cache
             rgs/config.json
+
