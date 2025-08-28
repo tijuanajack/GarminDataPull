@@ -1,166 +1,186 @@
-name: Renpho Last Pull (TJ-Ath)
+name: Renpho pull with MFA pause
 
 on:
   workflow_dispatch:
-    inputs:
-      renpho_profile:
-        description: Renpho profile nickname (for example TJ-Ath)
-        required: true
-        default: TJ-Ath
-      since_days:
-        description: How many days back to search
-        required: true
-        default: "30"
+
+env:
+  CACHE_DIR: ${{ github.workspace }}/garmin_agent/data
+  RENPHO_PROFILE: TJ-Ath
 
 jobs:
-  renpho_last:
+  auth_pw:
+    name: Job 1 - Trigger Garmin MFA and stage RGS
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
         with:
-          python-version: "3.11"
+          dotnet-version: 8.0.x
 
-      - name: Install deps
+      - name: Clone RGS
+        run: git clone https://github.com/forkerer/RenphoGarminSync-CLI.git rgs
+
+      - name: Publish RGS
+        working-directory: rgs
         run: |
-          python -m pip install --upgrade pip
-          pip install requests tabulate
+          dotnet publish ./RenphoGarminSync.Console -c Release -r linux-x64 --self-contained false -o publish
+          ls -la publish
 
-      - name: Pull latest Renpho record and print metrics
-        shell: python
+      - name: Configure cache path
+        run: |
+          set -eux
+          mkdir -p "${CACHE_DIR}" "${HOME}/Documents/GarminRenphoSync"
+          cat > rgs/config.json <<EOF
+          {
+            "UseDefaultCachePath": false,
+            "CustomCachePath": "${{ env.CACHE_DIR }}"
+          }
+          EOF
+          cp rgs/config.json "${HOME}/Documents/GarminRenphoSync/config.json"
+          echo "== config.json ==" && cat rgs/config.json
+
+      - name: Renpho auth
+        working-directory: rgs
         env:
           RENPHO_EMAIL:    ${{ secrets.RENPHO_EMAIL }}
           RENPHO_PASSWORD: ${{ secrets.RENPHO_PASSWORD }}
-          RENPHO_USER_ID:  ${{ secrets.R_enphon_user_id }} # optional, if you have one
-          PROFILE_NAME:    ${{ github.event.inputs.renpho_profile }}
-          SINCE_DAYS:      ${{ github.event.inputs.since_days }}
+        run: ./publish/rgs auth renpho --u "${RENPHO_EMAIL}" --pw "${RENPHO_PASSWORD}"
+
+      - name: Garmin auth (password only, do not fail if MFA required)
+        working-directory: rgs
+        env:
+          GARMIN_EMAIL:    ${{ secrets.GARMIN_EMAIL }}
+          GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
         run: |
-          import os, sys, json, datetime as dt
-          import requests
-          from tabulate import tabulate
+          set -x
+          ./publish/rgs auth garmin --u "${GARMIN_EMAIL}" --pw "${GARMIN_PASSWORD}" || true
+          echo "If MFA is enabled, Garmin should have sent a code to your email."
 
-          email = os.environ.get("RENPHO_EMAIL")
-          password = os.environ.get("RENPHO_PASSWORD")
-          user_id_override = os.environ.get("RENPHO_USER_ID")
-          profile_name = os.environ.get("PROFILE_NAME") or "TJ-Ath"
-          since_days = int(os.environ.get("SINCE_DAYS") or "30")
+      - name: Package RGS workspace for Job 2
+        run: |
+          tar -czf rgs_bundle.tgz rgs garmin_agent
 
-          if not email or not password:
-            print("Missing RENPHO_EMAIL or RENPHO_PASSWORD secrets", file=sys.stderr)
-            sys.exit(1)
-
-          session = requests.Session()
-          session.headers.update({
-            "User-Agent": "gh-actions/renpho-pull",
-            "Accept": "application/json",
-          })
-
-          def try_auth(scheme, with_secure_flag):
-            url = f"{scheme}://renpho.qnclouds.com/api/v3/users/sign_in.json"
-            params = {"app_id": "Renpho"}
-            data = {"email": email, "password": password}
-            if with_secure_flag:
-              data["secure_flag"] = 0  # 0 means plain password
-            try:
-              r = session.post(url, params=params, data=data, timeout=30)
-              if r.status_code == 200:
-                j = r.json()
-                key = j.get("terminal_user_session_key")
-                if key:
-                  return key
-            except Exception:
-              pass
-            return None
-
-          # Try 4 auth variants that work with the legacy API
-          key = None
-          for scheme in ("https", "http"):
-            for secure in (False, True):  # no secure_flag, then secure_flag=0
-              key = try_auth(scheme, secure)
-              if key:
-                break
-            if key:
-              break
-
-          if not key:
-            print("Auth failed against legacy Renpho API after multiple variants", file=sys.stderr)
-            sys.exit(2)
-
-          # Resolve scale user
-          if user_id_override:
-            scale_user_id = user_id_override
-          else:
-            users_url = "https://renpho.qnclouds.com/api/v3/scale_users/list_scale_user"
-            r = session.get(users_url, params={"locale":"en","terminal_user_session_key":key}, timeout=30)
-            r.raise_for_status()
-            payload = r.json() or {}
-            scale_users = payload.get("scale_users") or payload.get("scale_user") or []
-            if not isinstance(scale_users, list) or not scale_users:
-              print(f"No scale users found.\nResponse: {json.dumps(payload, indent=2)}", file=sys.stderr)
-              sys.exit(3)
-
-            match = None
-            for u in scale_users:
-              nick = str(u.get("nickname") or u.get("name") or "").strip()
-              if nick.lower() == profile_name.strip().lower():
-                match = u
-                break
-            target = match or scale_users[0]
-            scale_user_id = str(target.get("user_id") or target.get("id"))
-
-          # Pull recent measurements
-          last_at = int((dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=since_days)).timestamp())
-          meas_url = "https://renpho.qnclouds.com/api/v2/measurements/list.json"
-          r = session.get(meas_url, params={
-              "user_id": scale_user_id,
-              "last_at": last_at,
-              "locale": "en",
-              "app_id": "Renpho",
-              "terminal_user_session_key": key
-          }, timeout=45)
-          r.raise_for_status()
-          data = r.json()
-          items = data.get("last_ary") or data.get("measurements") or []
-          if not items:
-            print("No measurements returned. Increase since_days.", file=sys.stderr)
-            sys.exit(4)
-
-          # Sort newest first
-          items.sort(key=lambda x: x.get("time_stamp", 0), reverse=True)
-          last = items[0]
-
-          # Save raw JSON
-          with open("renpho_last.json", "w") as f:
-            json.dump(last, f, indent=2, ensure_ascii=False)
-
-          def g(k):
-            v = last.get(k)
-            return None if v in ("", "null", None) else v
-
-          rows = [
-            ("timestamp",              g("time_stamp")),
-            ("weight_kg",              g("weight")),
-            ("bmi",                    g("bmi")),
-            ("body_fat_%",             g("bodyfat")),
-            ("water_%",                g("water")),
-            ("muscle_%",               g("muscle")),
-            ("skeletal_muscle_%",      g("skeletal_muscle_rate") or g("skeletal_muscle")),
-            ("bone_mass",              g("bone")),
-            ("visceral_fat_level",     g("visfat")),
-            ("bmr_kcal_day",           g("bmr") or g("basal_metabolism")),
-            ("metabolic_age",          g("bodyage")),
-            ("protein_%",              g("protein")),
-          ]
-          print("\nRenpho last measurement (raw saved to renpho_last.json)\n")
-          print(tabulate(rows, headers=["Metric", "Value"], tablefmt="github"))
-
-      - name: Upload raw JSON
+      - name: Upload bundle for Job 2
         uses: actions/upload-artifact@v4
         with:
-          name: renpho-last-json
-          path: renpho_last.json
-          if-no-files-found: error
+          name: rgs-bundle
+          path: rgs_bundle.tgz
+
+  finish_mfa_and_sync:
+    name: Job 2 - Enter MFA, complete auth, pull and parse FIT
+    needs: auth_pw
+    runs-on: ubuntu-latest
+    environment: mfa-gate   # create this Environment once in repo settings
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download bundle from Job 1
+        uses: actions/download-artifact@v4
+        with:
+          name: rgs-bundle
+
+      - name: Unpack
+        run: tar -xzf rgs_bundle.tgz
+
+      - name: Complete Garmin MFA
+        working-directory: rgs
+        env:
+          GARMIN_EMAIL:    ${{ secrets.GARMIN_EMAIL }}
+          GARMIN_MFA_CODE: ${{ secrets.GARMIN_MFA_CODE }}   # set this per run before approval
+        run: |
+          if [ -z "${GARMIN_MFA_CODE:-}" ]; then
+            echo "GARMIN_MFA_CODE environment secret is empty. Set it on the mfa-gate environment, then re-approve."
+            exit 1
+          fi
+          ./publish/rgs auth garmin --u "${GARMIN_EMAIL}" --mfa "${GARMIN_MFA_CODE}"
+
+      - name: Sync Renpho -> FIT (TJ-Ath)
+        working-directory: rgs
+        env:
+          GARMIN_EMAIL:    ${{ secrets.GARMIN_EMAIL }}
+          GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
+          RENPHO_EMAIL:    ${{ secrets.RENPHO_EMAIL }}
+          RENPHO_PASSWORD: ${{ secrets.RENPHO_PASSWORD }}
+        run: |
+          ./publish/rgs sync \
+            --gu "${GARMIN_EMAIL}" \
+            --gpw "${GARMIN_PASSWORD}" \
+            --ru "${RENPHO_EMAIL}" \
+            --rpw "${RENPHO_PASSWORD}" \
+            --renphoProfile "${{ env.RENPHO_PROFILE }}"
+
+      - name: List cache
+        run: |
+          echo "== Cache contents =="
+          ls -la "${{ env.CACHE_DIR }}" || true
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install fitparse
+        run: python -m pip install --upgrade pip fitparse
+
+      - name: Parse newest FIT and print all fields
+        env:
+          CACHE_DIR: ${{ env.CACHE_DIR }}
+        run: |
+          python - <<'PY'
+          import os, glob, json, sys
+          from fitparse import FitFile
+
+          cache = os.environ["CACHE_DIR"]
+          fits = sorted(glob.glob(os.path.join(cache, "*.fit")), key=os.path.getmtime)
+          if not fits:
+              print("No FIT files found in cache path.")
+              sys.exit(1)
+
+          last = fits[-1]
+          print(f"Newest FIT: {last}")
+
+          fit = FitFile(last)
+          records = []
+          for msg in fit.get_messages():
+              for field in msg:
+                  try:
+                      val = field.value
+                  except Exception:
+                      val = None
+                  records.append({
+                      "message": msg.name,
+                      "field": field.name,
+                      "value": val,
+                      "units": getattr(field, "units", None),
+                  })
+
+          out_json = os.path.join(cache, "last_fit_all_fields.json")
+          with open(out_json, "w") as f:
+              json.dump(records, f, indent=2, default=str)
+          print(f"Saved all fields JSON: {out_json}")
+
+          # Print a concise subset if present
+          wanted = {
+              "weight","bmi","body_fat","body_water","bone_mass","muscle_mass",
+              "visceral_fat","metabolic_age","basal_met","physique_rating",
+              "skeletal_muscle_mass","skeletal_muscle_percent"
+          }
+          print("\nSelected body-comp fields:")
+          for r in records:
+              if r["field"] in wanted:
+                  units = f" {r['units']}" if r.get("units") else ""
+                  print(f"- {r['field']}: {r['value']}{units}")
+          PY
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: renpho-fit-and-dump
+          path: |
+            ${{ env.CACHE_DIR }}/*.fit
+            ${{ env.CACHE_DIR }}/last_fit_all_fields.json
+          if-no-files-found: warn
