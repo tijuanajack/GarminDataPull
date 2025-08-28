@@ -8,7 +8,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
@@ -33,22 +32,48 @@ jobs:
           }
           JSON
 
-      # Publish a framework-dependent build (no RID, no trimming)
-      - name: Publish CLI (portable)
+      # Publish for linux-x64, framework-dependent, no trimming, not single-file
+      - name: Publish CLI
         working-directory: rgs
-        run: dotnet publish ./RenphoGarminSync.Console -c Release -o ./publish
+        run: |
+          dotnet publish ./RenphoGarminSync.Console \
+            -c Release \
+            -r linux-x64 \
+            --self-contained false \
+            -o ./publish
+          echo "=== PUBLISH CONTENTS ==="
+          ls -la ./publish
 
-      - name: Verify Renpho auth
+      - name: Run Renpho auth
         working-directory: rgs
-        run: dotnet ./publish/RenphoGarminSync.Console.dll auth renpho --u "${{ secrets.RENPHO_EMAIL }}" --pw "${{ secrets.RENPHO_PASSWORD }}"
+        shell: bash
+        run: |
+          DLL=""
+          if [ -f ./publish/RenphoGarminSync.Console.dll ]; then
+            DLL=./publish/RenphoGarminSync.Console.dll
+          elif [ -f ./publish/rgs.dll ]; then
+            DLL=./publish/rgs.dll
+          else
+            echo "No expected DLL found. Listing publish dir:" && ls -la ./publish && exit 1
+          fi
+          dotnet "$DLL" auth renpho --u "${{ secrets.RENPHO_EMAIL }}" --pw "${{ secrets.RENPHO_PASSWORD }}"
 
-      # Generate FIT files without uploading to Garmin
       - name: Pull newest and save FIT files (no upload)
         working-directory: rgs
-        run: dotnet ./publish/RenphoGarminSync.Console.dll sync \
-               --gu "placeholder" --gpw "placeholder" \
-               --ru "${{ secrets.RENPHO_EMAIL }}" --rpw "${{ secrets.RENPHO_PASSWORD }}" \
-               --dry-run
+        shell: bash
+        run: |
+          DLL=""
+          if [ -f ./publish/RenphoGarminSync.Console.dll ]; then
+            DLL=./publish/RenphoGarminSync.Console.dll
+          elif [ -f ./publish/rgs.dll ]; then
+            DLL=./publish/rgs.dll
+          else
+            echo "No expected DLL found. Listing publish dir:" && ls -la ./publish && exit 1
+          fi
+          dotnet "$DLL" sync \
+            --gu "placeholder" --gpw "placeholder" \
+            --ru "${{ secrets.RENPHO_EMAIL }}" --rpw "${{ secrets.RENPHO_PASSWORD }}" \
+            --dry-run
 
       - name: List generated files for debug
         if: always()
