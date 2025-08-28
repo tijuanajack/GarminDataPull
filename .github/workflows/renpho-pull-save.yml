@@ -1,103 +1,146 @@
-name: Renpho latest via hass-renpho
+name: Renpho Last Pull (TJ-Ath)
 
 on:
   workflow_dispatch:
+    inputs:
+      renpho_profile:
+        description: Renpho profile nickname (e.g., TJ-Ath)
+        required: true
+        default: TJ-Ath
+      since_days:
+        description: How many days back to search (bigger if you weigh infrequently)
+        required: true
+        default: "30"
 
 jobs:
-  pull-renpho:
+  renpho_last:
     runs-on: ubuntu-latest
+    env:
+      RENPHO_EMAIL:    ${{ secrets.RENPHO_EMAIL }}
+      RENPHO_PASSWORD: ${{ secrets.RENPHO_PASSWORD }}
+      RENPHO_USER_ID:  ${{ secrets.RENPHO_USER_ID }}   # optional override
     steps:
-      - name: Checkout (empty repo ok)
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
           pip install requests tabulate
 
-      - name: Fetch last Renpho measurement
+      - name: Pull latest Renpho record and print metrics
+        shell: python
         env:
-          RENPHO_EMAIL: ${{ secrets.RENPHO_EMAIL }}
-          RENPHO_PASSWORD: ${{ secrets.RENPHO_PASSWORD }}
-          RENPHO_USER_ID: ${{ secrets.RENPHO_USER_ID }}
+          PROFILE_NAME:   ${{ github.event.inputs.renpho_profile }}
+          SINCE_DAYS:     ${{ github.event.inputs.since_days }}
         run: |
-          python - <<'PY'
-          import os, sys, json, time
+          import os, sys, time, json, datetime as dt
           import requests
           from tabulate import tabulate
 
           email = os.environ.get("RENPHO_EMAIL")
           password = os.environ.get("RENPHO_PASSWORD")
-          user_id = os.environ.get("RENPHO_USER_ID") or None
+          user_id_override = os.environ.get("RENPHO_USER_ID")
+          profile_name = os.environ.get("PROFILE_NAME") or "TJ-Ath"
+          since_days = int(os.environ.get("SINCE_DAYS") or "30")
 
           if not email or not password:
-            print("Missing RENPHO_EMAIL or RENPHO_PASSWORD")
+            print("Missing RENPHO_EMAIL or RENPHO_PASSWORD secrets", file=sys.stderr)
             sys.exit(1)
 
-          base = "https://hass-renpho.vercel.app"
-          # Try a few likely routes seen on FastAPI projects
-          candidates = [
-            "/last",
-            "/api/last",
-            "/v1/last",
-            "/renpho/last",
-            "/last_measurement",
-          ]
+          base = "https://renpho.qnclouds.com"
+          s = requests.Session()
+          s.headers.update({"User-Agent": "github-actions/renpho-pull"})
 
-          last = None
-          used = None
-          for path in candidates:
-            url = base + path
-            try:
-              params = {"email": email, "password": password}
-              if user_id:
-                params["user_id"] = user_id
-              r = requests.get(url, params=params, timeout=25)
-              # Accept 200 with JSON payload
-              if r.status_code == 200:
-                try:
-                  data = r.json()
-                except Exception:
-                  continue
-                # Accept common shapes
-                if isinstance(data, dict) and data:
-                  last = data
-                  used = url
-                  break
-                if isinstance(data, list) and data:
-                  last = data[0]
-                  used = url
-                  break
-            except Exception:
-              continue
-
-          if not last:
-            print("Could not fetch last measurement from hosted API.")
-            print("Tried routes:", ", ".join(base + p for p in candidates))
+          # 1) Auth (secure_flag=1 lets us send the plain password; server handles hashing)
+          auth_url = f"{base}/api/v3/users/sign_in.json"
+          r = s.post(auth_url, params={"app_id":"Renpho"},
+                     data={"secure_flag":1, "email":email, "password":password}, timeout=30)
+          r.raise_for_status()
+          auth = r.json()
+          key = auth.get("terminal_user_session_key")
+          if not key:
+            print(f"Unexpected auth response:\n{json.dumps(auth, indent=2)}", file=sys.stderr)
             sys.exit(2)
 
-          # Flatten 1-level nested 'data' if present
-          if "data" in last and isinstance(last["data"], dict):
-            last = last["data"]
+          # 2) Resolve scale user
+          if user_id_override:
+            scale_user_id = user_id_override
+          else:
+            users_url = f"{base}/api/v3/scale_users/list_scale_user"
+            r = s.get(users_url, params={"locale":"en", "terminal_user_session_key":key}, timeout=30)
+            r.raise_for_status()
+            payload = r.json() or {}
+            scale_users = payload.get("scale_users") or payload.get("scale_user") or []
+            if not isinstance(scale_users, list) or not scale_users:
+              print(f"No scale users found. Response:\n{json.dumps(payload, indent=2)}", file=sys.stderr)
+              sys.exit(3)
+            # Try to match by nickname; fall back to first user
+            match = None
+            for u in scale_users:
+              if str(u.get("nickname") or u.get("name") or "").strip().lower() == profile_name.strip().lower():
+                match = u
+                break
+            target = match or scale_users[0]
+            scale_user_id = str(target.get("user_id") or target.get("id"))
 
-          # Sort keys for readability
-          items = sorted(last.items(), key=lambda kv: kv[0].lower())
-          print(f"Source: {used}")
-          print(tabulate(items, headers=["Field", "Value"], tablefmt="github"))
+          # 3) Pull recent measurements and take the newest
+          last_at = int((dt.date.today() - dt.timedelta(days=since_days)).strftime("%s"))
+          meas_url = f"{base}/api/v2/measurements/list.json"
+          r = s.get(meas_url, params={
+              "user_id": scale_user_id,
+              "last_at": last_at,
+              "locale": "en",
+              "app_id": "Renpho",
+              "terminal_user_session_key": key
+          }, timeout=45)
+          r.raise_for_status()
+          data = r.json()
+          items = data.get("last_ary") or data.get("measurements") or []
+          if not items:
+            print("No measurements returned in the window. Try increasing since_days.", file=sys.stderr)
+            sys.exit(4)
 
-          # Save raw JSON for downstream steps
+          # Most recent first per API, but sort defensively
+          items.sort(key=lambda x: x.get("time_stamp", 0), reverse=True)
+          last = items[0]
+
+          # Save raw JSON
           with open("renpho_last.json", "w") as f:
             json.dump(last, f, indent=2, ensure_ascii=False)
 
-          PY
+          # Friendly summary of the fields you care about. Keys per hass-renpho README.
+          def g(k): 
+            v = last.get(k)
+            return None if v in ("", "null", None) else v
 
-      - name: Upload artifact (raw JSON)
+          # Weight kg is native; many body comp values are percentages or levels already
+          summary_rows = [
+            ("timestamp",  g("time_stamp")),
+            ("weight_kg",  g("weight")),
+            ("bmi",        g("bmi")),
+            ("body_fat_%", g("bodyfat")),
+            ("water_%",    g("water")),
+            ("muscle_%",   g("muscle")),
+            ("skeletal_muscle_%", g("skeletal_muscle_rate") or g("skeletal_muscle")),
+            ("bone_mass",  g("bone")),               # sometimes percent; model dependent
+            ("visceral_fat_level", g("visfat")),
+            ("bmr_kcal_day", g("bmr") or g("basal_metabolism")),
+            ("metabolic_age", g("bodyage")),
+            ("protein_%", g("protein")),
+          ]
+
+          print("\nRenpho last measurement (raw keys saved to renpho_last.json)\n")
+          print(tabulate(summary_rows, headers=["Metric", "Value"], tablefmt="github"))
+
+      - name: Upload raw JSON
         uses: actions/upload-artifact@v4
         with:
           name: renpho-last-json
           path: renpho_last.json
+          if-no-files-found: error
