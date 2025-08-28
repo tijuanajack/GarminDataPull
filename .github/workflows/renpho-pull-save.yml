@@ -33,21 +33,19 @@ jobs:
           }
           JSON
 
+      # Build without trimming or single-file
       - name: Build CLI
         working-directory: rgs
-        run: |
-          dotnet build -c Release
-          dotnet publish ./RenphoGarminSync.Console -c Release -r linux-x64 -p:PublishSingleFile=true -p:PublishTrimmed=true -o ./publish
+        run: dotnet build -c Release
 
       - name: Verify Renpho auth
         working-directory: rgs
-        run: ./publish/rgs auth renpho --u "${{ secrets.RENPHO_EMAIL }}" --pw "${{ secrets.RENPHO_PASSWORD }}"
+        run: dotnet run --project ./RenphoGarminSync.Console -- auth renpho --u "${{ secrets.RENPHO_EMAIL }}" --pw "${{ secretsRENPHO_PASSWORD }}"
 
-      # Pull latest entries and WRITE .fit files, but do not upload to Garmin
-      # Garmin flags are required by the CLI. Placeholders are fine here.
+      # Pull latest and WRITE .fit files, but no Garmin upload
       - name: Pull newest and save FIT files (no upload)
         working-directory: rgs
-        run: ./publish/rgs sync \
+        run: dotnet run --project ./RenphoGarminSync.Console -- sync \
                --gu "placeholder" --gpw "placeholder" \
                --ru "${{ secrets.RENPHO_EMAIL }}" --rpw "${{ secrets.RENPHO_PASSWORD }}" \
                --dry-run
