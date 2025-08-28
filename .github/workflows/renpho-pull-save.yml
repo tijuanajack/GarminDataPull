@@ -1,16 +1,20 @@
-name: Renpho pull with MFA pause
+name: Renpho export-only (save FIT, no Garmin)
 
 on:
   workflow_dispatch:
+    inputs:
+      renpho_profile:
+        description: Renpho profile name
+        default: "TJ-Ath"
+        required: true
 
 env:
   CACHE_DIR: ${{ github.workspace }}/garmin_agent/data
-  RENPHO_PROFILE: TJ-Ath
 
 jobs:
-  auth_pw:
-    name: Job 1 - Trigger Garmin MFA and stage RGS
+  export_only:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -23,11 +27,137 @@ jobs:
       - name: Clone RGS
         run: git clone https://github.com/forkerer/RenphoGarminSync-CLI.git rgs
 
-      - name: Publish RGS
+      - name: Apply tiny export-only patch
         working-directory: rgs
         run: |
-          dotnet publish ./RenphoGarminSync.Console -c Release -r linux-x64 --self-contained false -o publish
-          ls -la publish
+          cat > export-only.patch <<'PATCH'
+diff --git a/RenphoGarminSync.Console/Program.cs b/RenphoGarminSync.Console/Program.cs
+index 1111111..2222222 100644
+--- a/RenphoGarminSync.Console/Program.cs
++++ b/RenphoGarminSync.Console/Program.cs
+@@ -1,6 +1,7 @@
+ using System.CommandLine;
+ using System.CommandLine.Binding;
+ using System.Threading.Tasks;
++using System;
+
+ namespace RenphoGarminSync.ConsoleApp
+ {
+     internal static class Program
+@@ -25,6 +26,8 @@ namespace RenphoGarminSync.ConsoleApp
+             var garminUsername = new Option<string>("--garminUsername", description: "Garmin username/email.") { Arity = ArgumentArity.ZeroOrOne, IsRequired = false };
+             garminUsername.AddAlias("--gu");
+             var garminPassword = new Option<string>("--garminPassword", description: "Garmin password.") { Arity = ArgumentArity.ZeroOrOne, IsRequired = false };
+             garminPassword.AddAlias("--gpw");
++            var exportOnly = new Option<bool>("--export-only", description: "Generate and save FIT files but skip any Garmin upload.") { Arity = ArgumentArity.ZeroOrOne };
++
+             var renphoUsername = new Option<string>("--renphoUsername", description: "Renpho username/email.") { Arity = ArgumentArity.ExactlyOne, IsRequired = true };
+             renphoUsername.AddAlias("--ru");
+             var renphoPassword = new Option<string>("--renphoPassword", description: "Renpho password.") { Arity = ArgumentArity.ExactlyOne, IsRequired = true };
+             renphoPassword.AddAlias("--rpw");
+@@ -43,6 +46,7 @@ namespace RenphoGarminSync.ConsoleApp
+                 renphoPassword,
+                 renphoProfile,
+                 dryRun,
+-                noFitFiles
++                noFitFiles,
++                exportOnly
+             };
+
+             sync.AddOptions(syncOptions);
+@@ -50,7 +54,7 @@ namespace RenphoGarminSync.ConsoleApp
+             sync.SetHandler(async (string gu, string gpw, string ru, string rpw, string rprofile, bool dry, bool nofits, bool xonly) =>
+             {
+-                var handler = new RenphoGarminSyncCommandHandler(gu, gpw, ru, rpw, rprofile, dry, nofits);
++                var handler = new RenphoGarminSyncCommandHandler(gu, gpw, ru, rpw, rprofile, dry, nofits, xonly);
+                 await handler.InvokeAsync();
+             }, garminUsername, garminPassword, renphoUsername, renphoPassword, renphoProfile, dryRun, noFitFiles, exportOnly);
+
+diff --git a/RenphoGarminSync.Console/RenphoGarminSyncCommandHandler.cs b/RenphoGarminSync.Console/RenphoGarminSyncCommandHandler.cs
+index 3333333..4444444 100644
+--- a/RenphoGarminSync.Console/RenphoGarminSyncCommandHandler.cs
++++ b/RenphoGarminSync.Console/RenphoGarminSyncCommandHandler.cs
+@@ -1,6 +1,7 @@
+ using System;
+ using System.Linq;
+ using System.Threading.Tasks;
++using System.IO;
+
+ using RenphoGarminSync.Garmin.Api;     // existing using
+ using RenphoGarminSync.Renpho.Api;     // existing using
+@@ -15,14 +16,18 @@ namespace RenphoGarminSync.ConsoleApp
+     internal sealed class RenphoGarminSyncCommandHandler
+     {
+         private readonly string _garminUsername;
+         private readonly string _garminPassword;
+         private readonly string _renphoUsername;
+         private readonly string _renphoPassword;
+         private readonly string _renphoProfile;
+         private readonly bool _dryRun;
+         private readonly bool _noFitFiles;
++        private readonly bool _exportOnly;
+
+-        public RenphoGarminSyncCommandHandler(string garminUsername, string garminPassword, string renphoUsername, string renphoPassword, string renphoProfile, bool dryRun, bool noFitFiles)
++        public RenphoGarminSyncCommandHandler(string garminUsername, string garminPassword, string renphoUsername, string renphoPassword, string renphoProfile, bool dryRun, bool noFitFiles, bool exportOnly)
+         {
+             _garminUsername = garminUsername;
+             _garminPassword = garminPassword;
+             _renphoUsername = renphoUsername;
+             _renphoPassword = renphoPassword;
+             _renphoProfile  = renphoProfile;
+             _dryRun = dryRun;
+             _noFitFiles = noFitFiles;
++            _exportOnly = exportOnly;
+         }
+@@ -32,6 +37,14 @@ namespace RenphoGarminSync.ConsoleApp
+         public async Task<int> InvokeAsync()
+         {
++            // When export-only is requested, allow Garmin creds to be empty and force FIT saving on.
++            var effectiveNoFitFiles = _exportOnly ? false : _noFitFiles;
++            if (!_exportOnly)
++            {
++                if (string.IsNullOrWhiteSpace(_garminUsername))
++                    throw new ArgumentException("Garmin username/email is required unless --export-only is set.");
++            }
++
+             var renpho = new RenphoApi(); // existing client creation
+             var measurements = await GetMeasurementsForUserAsync(await ResolveRenphoUserIdAsync(renpho, _renphoUsername, _renphoProfile));
+             if (_dryRun)
+             {
+                 PrintNewMeasurements(measurements);
+                 return 0;
+             }
+@@ -41,20 +54,39 @@ namespace RenphoGarminSync.ConsoleApp
+             foreach (var m in measurements)
+             {
+-                // Existing flow (simplified): optionally save FIT, then upload to Garmin
+-                if (!_noFitFiles)
+-                    await SaveFitFileAsync(m);
+-                await UploadToGarminAsync(m, _garminUsername, _garminPassword);
++                // New flow:
++                // 1) Always save FIT when export-only (or when not explicitly disabled)
++                if (!effectiveNoFitFiles)
++                    await SaveFitFileAsync(m);
++
++                // 2) Skip Garmin upload entirely when export-only
++                if (_exportOnly)
++                    continue;
++
++                // 3) Otherwise perform normal upload
++                await UploadToGarminAsync(m, _garminUsername, _garminPassword);
+             }
+             return 0;
+         }
+ 
+         // existing private helpers: ResolveRenphoUserIdAsync, GetMeasurementsForUserAsync, SaveFitFileAsync, UploadToGarminAsync, PrintNewMeasurements...
+     }
+ }
+PATCH
+          git apply --whitespace=nowarn export-only.patch
+
+      - name: Build RGS with patch
+        working-directory: rgs
+        run: dotnet publish ./RenphoGarminSync.Console -c Release -r linux-x64 --self-contained false -o publish
 
       - name: Configure cache path
         run: |
@@ -49,74 +179,25 @@ jobs:
           RENPHO_PASSWORD: ${{ secrets.RENPHO_PASSWORD }}
         run: ./publish/rgs auth renpho --u "${RENPHO_EMAIL}" --pw "${RENPHO_PASSWORD}"
 
-      - name: Garmin auth (password only, do not fail if MFA required)
+      - name: Export latest as FIT only (no Garmin)
         working-directory: rgs
         env:
-          GARMIN_EMAIL:    ${{ secrets.GARMIN_EMAIL }}
-          GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
-        run: |
-          set -x
-          ./publish/rgs auth garmin --u "${GARMIN_EMAIL}" --pw "${GARMIN_PASSWORD}" || true
-          echo "If MFA is enabled, Garmin should have sent a code to your email."
-
-      - name: Package RGS workspace for Job 2
-        run: |
-          tar -czf rgs_bundle.tgz rgs garmin_agent
-
-      - name: Upload bundle for Job 2
-        uses: actions/upload-artifact@v4
-        with:
-          name: rgs-bundle
-          path: rgs_bundle.tgz
-
-  finish_mfa_and_sync:
-    name: Job 2 - Enter MFA, complete auth, pull and parse FIT
-    needs: auth_pw
-    runs-on: ubuntu-latest
-    environment: mfa-gate   # create this Environment once in repo settings
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Download bundle from Job 1
-        uses: actions/download-artifact@v4
-        with:
-          name: rgs-bundle
-
-      - name: Unpack
-        run: tar -xzf rgs_bundle.tgz
-
-      - name: Complete Garmin MFA
-        working-directory: rgs
-        env:
-          GARMIN_EMAIL:    ${{ secrets.GARMIN_EMAIL }}
-          GARMIN_MFA_CODE: ${{ secrets.GARMIN_MFA_CODE }}   # set this per run before approval
-        run: |
-          if [ -z "${GARMIN_MFA_CODE:-}" ]; then
-            echo "GARMIN_MFA_CODE environment secret is empty. Set it on the mfa-gate environment, then re-approve."
-            exit 1
-          fi
-          ./publish/rgs auth garmin --u "${GARMIN_EMAIL}" --mfa "${GARMIN_MFA_CODE}"
-
-      - name: Sync Renpho -> FIT (TJ-Ath)
-        working-directory: rgs
-        env:
-          GARMIN_EMAIL:    ${{ secrets.GARMIN_EMAIL }}
-          GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
           RENPHO_EMAIL:    ${{ secrets.RENPHO_EMAIL }}
           RENPHO_PASSWORD: ${{ secrets.RENPHO_PASSWORD }}
+          PROFILE:         ${{ github.event.inputs.renpho_profile }}
         run: |
           ./publish/rgs sync \
-            --gu "${GARMIN_EMAIL}" \
-            --gpw "${GARMIN_PASSWORD}" \
             --ru "${RENPHO_EMAIL}" \
             --rpw "${RENPHO_PASSWORD}" \
-            --renphoProfile "${{ env.RENPHO_PROFILE }}"
+            --renphoProfile "${PROFILE}" \
+            --export-only
 
-      - name: List cache
+      - name: Show cache contents
         run: |
-          echo "== Cache contents =="
-          ls -la "${{ env.CACHE_DIR }}" || true
+          echo "== Cache =="
+          ls -la "${CACHE_DIR}" || true
+          echo "== Any FIT under workspace =="
+          find "${GITHUB_WORKSPACE}" -type f -name '*.fit' -print || true
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -137,9 +218,7 @@ jobs:
           cache = os.environ["CACHE_DIR"]
           fits = sorted(glob.glob(os.path.join(cache, "*.fit")), key=os.path.getmtime)
           if not fits:
-              print("No FIT files found in cache path.")
-              sys.exit(1)
-
+              print("No FIT files found in cache path."); sys.exit(1)
           last = fits[-1]
           print(f"Newest FIT: {last}")
 
@@ -158,12 +237,7 @@ jobs:
                       "units": getattr(field, "units", None),
                   })
 
-          out_json = os.path.join(cache, "last_fit_all_fields.json")
-          with open(out_json, "w") as f:
-              json.dump(records, f, indent=2, default=str)
-          print(f"Saved all fields JSON: {out_json}")
-
-          # Print a concise subset if present
+          # Focused subset in logs
           wanted = {
               "weight","bmi","body_fat","body_water","bone_mass","muscle_mass",
               "visceral_fat","metabolic_age","basal_met","physique_rating",
@@ -174,6 +248,11 @@ jobs:
               if r["field"] in wanted:
                   units = f" {r['units']}" if r.get("units") else ""
                   print(f"- {r['field']}: {r['value']}{units}")
+
+          out_json = os.path.join(cache, "last_fit_all_fields.json")
+          with open(out_json, "w") as f:
+              json.dump(records, f, indent=2, default=str)
+          print(f"\nSaved: {out_json}")
           PY
 
       - name: Upload artifacts
