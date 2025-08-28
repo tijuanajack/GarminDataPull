@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
 
 env:
-  BLEND_STD_WEIGHT: "0.6"   # adjust if you want a different blend
+  BLEND_STD_WEIGHT: "0.6"
   BLEND_ATH_WEIGHT: "0.4"
 
 jobs:
@@ -15,7 +15,6 @@ jobs:
         profile: [ "TJ-Ath", "TJ-Standard" ]
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
@@ -54,7 +53,6 @@ jobs:
         working-directory: rgs
         run: ./publish/rgs auth renpho --u "${{ secrets.RENPHO_EMAIL }}" --pw "${{ secrets.RENPHO_PASSWORD }}"
 
-      # Pull and generate FIT files for this profile only. No Garmin upload.
       - name: Pull newest and save FIT files (${{ matrix.profile }})
         working-directory: rgs
         run: |
@@ -100,25 +98,22 @@ jobs:
       - name: Install parsers
         run: |
           python -m pip install --upgrade pip
-          pip install fitparse pandas
+          pip install fitparse
 
       - name: Display latest metrics and blended summary
         env:
           BLEND_STD_WEIGHT: ${{ env.BLEND_STD_WEIGHT }}
           BLEND_ATH_WEIGHT: ${{ env.BLEND_ATH_WEIGHT }}
-          TZ: America/Chicago
         shell: python
         run: |
-          import os, glob, math, textwrap
+          import os, glob
           from datetime import timezone
+          from zoneinfo import ZoneInfo
           from fitparse import FitFile
-          import pytz
-          import pandas as pd
 
           base = os.path.abspath("artifacts")
           profiles = ["TJ-Ath", "TJ-Standard"]
 
-          # Field resolver
           def get(d, *names, cast=float):
               for n in names:
                   if n in d and d[n] is not None:
@@ -150,12 +145,107 @@ jobs:
               if not latest:
                   return None
               fname, record, ts = latest
-              # Normalize fields
-              out = {
+              return {
                   "profile": profile,
                   "source_fit": fname,
                   "timestamp_utc": ts.astimezone(timezone.utc),
                   "weight_kg": get(record, "weight", "body_weight", "weight_kg"),
                   "bmi": get(record, "bmi"),
-                  "body_fat_pct": get(re
+                  "body_fat_pct": get(record, "body_fat_percentage", "percent_fat", "body_fat"),
+                  "body_water_pct": get(record, "hydration_percentage", "body_water", "percent_hydration"),
+                  "muscle_mass_kg": get(record, "muscle_mass", "muscle_mass_kg"),
+                  "skeletal_muscle_pct": get(record, "skeletal_muscle_percentage", "skeletal_muscle"),
+                  "bone_mass_kg": get(record, "bone_mass", "bone_mass_kg"),
+                  "visceral_fat_rating": get(record, "visceral_fat_rating", "visceral_fat"),
+                  "bmr_kcal": get(record, "basal_met", "bmr", "basal_metabolic_rate"),
+                  "metabolic_age": get(record, "metabolic_age"),
+              }
 
+          data = {p: parse_latest(p) for p in profiles}
+          std = data.get("TJ-Standard")
+          ath = data.get("TJ-Ath")
+
+          w_std = float(os.getenv("BLEND_STD_WEIGHT", "0.6"))
+          w_ath = float(os.getenv("BLEND_ATH_WEIGHT", "0.4"))
+
+          def blend(std_val, ath_val):
+              if std_val is None and ath_val is None:
+                  return None
+              if std_val is None:
+                  return round(float(ath_val), 2)
+              if ath_val is None:
+                  return round(float(std_val), 2)
+              return round(w_std * float(std_val) + w_ath * float(ath_val), 2)
+
+          weight_kg = blend(std and std["weight_kg"], ath and ath["weight_kg"])
+          bmi = blend(std and std["bmi"], ath and ath["bmi"])
+          body_fat_pct = blend(std and std["body_fat_pct"], ath and ath["body_fat_pct"])
+          body_water_pct = blend(std and std["body_water_pct"], ath and ath["body_water_pct"])
+          muscle_mass_kg = blend(std and std["muscle_mass_kg"], ath and ath["muscle_mass_kg"])
+          skeletal_muscle_pct = blend(std and std["skeletal_muscle_pct"], ath and ath["skeletal_muscle_pct"])
+          bone_mass_kg = blend(std and std["bone_mass_kg"], ath and ath["bone_mass_kg"])
+          visceral_fat_rating = blend(std and std["visceral_fat_rating"], ath and ath["visceral_fat_rating"])
+          bmr_kcal = blend(std and std["bmr_kcal"], ath and ath["bmr_kcal"])
+          metabolic_age = blend(std and std["metabolic_age"], ath and ath["metabolic_age"])
+          skeletal_muscle_mass_kg = round(weight_kg * (skeletal_muscle_pct/100.0), 2) if weight_kg and skeletal_muscle_pct else None
+
+          def fmt_ts(dct):
+              if not dct or not dct.get("timestamp_utc"):
+                  return "n/a"
+              return dct["timestamp_utc"].astimezone(ZoneInfo("America/Chicago")).strftime("%Y-%m-%d %H:%M:%S %Z")
+
+          def line(label, val):
+              return f"- {label}: {val if val is not None else 'n/a'}"
+
+          lines = []
+          lines.append("# Renpho body composition summary")
+          lines.append("")
+          lines.append(f"Blend weights: Standard={w_std}, Athlete={w_ath}")
+          lines.append("")
+
+          for label, d in [("TJ-Standard", std), ("TJ-Ath", ath)]:
+              lines.append(f"## {label}")
+              if not d:
+                  lines.append("No recent FIT found")
+                  lines.append("")
+                  continue
+              lines.extend([
+                  line("Timestamp", fmt_ts(d)),
+                  line("Weight kg", d.get("weight_kg")),
+                  line("BMI", d.get("bmi")),
+                  line("Body Fat %", d.get("body_fat_pct")),
+                  line("Body Water %", d.get("body_water_pct")),
+                  line("Muscle Mass kg", d.get("muscle_mass_kg")),
+                  line("Skeletal Muscle %", d.get("skeletal_muscle_pct")),
+                  line("Bone Mass kg", d.get("bone_mass_kg")),
+                  line("Visceral Fat Rating", d.get("visceral_fat_rating")),
+                  line("BMR kcal/day", d.get("bmr_kcal")),
+                  line("Metabolic Age", d.get("metabolic_age")),
+                  ""
+              ])
+
+          lines.append("## Blended metrics")
+          lines.extend([
+              line("Weight kg", weight_kg),
+              line("Muscle Mass kg", muscle_mass_kg),
+              line("Skeletal Muscle Mass kg", skeletal_muscle_mass_kg),
+              line("Skeletal Muscle %", skeletal_muscle_pct),
+              line("Bone Mass kg", bone_mass_kg),
+              line("Visceral Fat Rating", visceral_fat_rating),
+              line("Body Fat %", body_fat_pct),
+              line("Body Water %", body_water_pct),
+              line("BMI", bmi),
+              line("Basal Metabolic Rate kcal/day", bmr_kcal),
+              line("Metabolic Age years", metabolic_age),
+          ])
+
+          md = "\n".join(lines)
+          print("\n" + md + "\n")
+          with open("renpho_blended_metrics.md", "w", encoding="utf-8") as f:
+              f.write(md)
+
+      - name: Upload summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: renpho-blended-metrics
+          path: renpho_blended_metrics.md
