@@ -1,4 +1,4 @@
-name: Renpho export-only (save FIT, no Garmin)
+name: Renpho export-only (save FIT, ignore Garmin)
 
 on:
   workflow_dispatch:
@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       CACHE_DIR: ${{ github.workspace }}/garmin_agent/data
-      RGS_EXPORT_ONLY: "1"
+
     steps:
       - uses: actions/checkout@v4
 
@@ -24,48 +24,9 @@ jobs:
       - name: Clone RenphoGarminSync-CLI
         run: git clone https://github.com/forkerer/RenphoGarminSync-CLI.git rgs
 
-      - name: Patch console handler and Garmin API, then build
+      - name: Build CLI
         working-directory: rgs
         run: |
-          python - <<'PY'
-          import pathlib, re
-
-          # 1) Console handler: remove all upload call sites and early-return inside the method
-          hp = pathlib.Path("RenphoGarminSync.Console/RenphoGarminSyncCommandHandler.cs")
-          hs = hp.read_text(encoding="utf-8")
-
-          if "using System.Threading.Tasks;" not in hs:
-              hs = hs.replace("using System;", "using System;\nusing System.Threading.Tasks;")
-
-          hs = re.sub(r"\bawait\s+UploadToGarminAsync\s*\([^;]*\);",
-                      "/* export-only: skip upload */ await Task.CompletedTask;", hs)
-          hs = re.sub(r"(?<!await\s)\bUploadToGarminAsync\s*\([^;]*\);",
-                      "/* export-only: skip upload */ _ = Task.CompletedTask;", hs)
-
-          hs = re.sub(r"(async\s+Task\s+UploadToGarminAsync\s*\([^)]*\)\s*\{)",
-                      r"\\1\n            // export-only hard stop\n            return;", hs)
-
-          hp.write_text(hs, encoding="utf-8")
-
-          # 2) Garmin API: short-circuit UploadActivity for byte[], Byte[], and Stream overloads
-          gp = pathlib.Path("RenphoGarminSync.Garmin.Api/GarminApi.cs")
-          gs = gp.read_text(encoding="utf-8")
-          if "using System;" not in gs:
-              gs = "using System;\n" + gs
-
-          for pattern in [
-              r"(public\s+async\s+Task\s+UploadActivity\s*\(\s*string\s+fileName\s*,\s*byte\[\]\s*content\s*\)\s*\{)",
-              r"(public\s+async\s+Task\s+UploadActivity\s*\(\s*string\s+fileName\s*,\s*Byte\[\]\s*content\s*\)\s*\{)",
-              r"(public\s+async\s+Task\s+UploadActivity\s*\(\s*string\s+fileName\s*,\s*System\.IO\.Stream\s+content\s*\)\s*\{)",
-          ]:
-              gs = re.sub(pattern,
-                          r"\\1\n            if (Environment.GetEnvironmentVariable(\"RGS_EXPORT_ONLY\") == \"1\") return;", gs)
-
-          gp.write_text(gs, encoding="utf-8")
-          print("Patched handler and API.")
-
-          PY
-
           dotnet publish ./RenphoGarminSync.Console -c Release -r linux-x64 --self-contained false -o publish
           ls -la publish
 
@@ -76,66 +37,81 @@ jobs:
           cp rgs/config.json "$HOME/Documents/GarminRenphoSync/config.json"
           echo "== Effective config.json ==" && cat rgs/config.json
 
-      - name: Renpho auth only
+      - name: Renpho auth
         working-directory: rgs
         env:
           RENPHO_EMAIL: ${{ secrets.RENPHO_EMAIL }}
           RENPHO_PASSWORD: ${{ secrets.RENPHO_PASSWORD }}
         run: ./publish/rgs auth renpho --u "${RENPHO_EMAIL}" --pw "${RENPHO_PASSWORD}"
 
-      - name: Export latest FIT to cache (dummy --gu, still no Garmin)
+      # Important: allow the Garmin failure but keep the job running
+      - name: Export latest FIT to cache (allow Garmin failure)
+        id: rgs_sync
         working-directory: rgs
+        continue-on-error: true
         env:
           RENPHO_EMAIL: ${{ secrets.RENPHO_EMAIL }}
           RENPHO_PASSWORD: ${{ secrets.RENPHO_PASSWORD }}
           PROFILE: ${{ github.event.inputs.renpho_profile }}
-        run: ./publish/rgs sync --gu skip --ru "${RENPHO_EMAIL}" --rpw "${RENPHO_PASSWORD}" --renphoProfile "${PROFILE}"
-
-      - name: Parse newest FIT and prepare artifacts
-        env:
-          CACHE_DIR: ${{ env.CACHE_DIR }}
         run: |
-          echo "== Cache listing ==" && ls -la "$CACHE_DIR" || true
+          set -eux
+          # Provide a dummy Garmin username to satisfy the required flag.
+          # The app will save FIT files before attempting upload, then fail on Garmin auth.
+          ./publish/rgs sync --gu placeholder --ru "${RENPHO_EMAIL}" --rpw "${RENPHO_PASSWORD}" --renphoProfile "${PROFILE}" || true
+
+      - name: Verify FIT cache
+        run: |
+          echo "== Cache listing =="
+          ls -la "$CACHE_DIR" || true
+          shopt -s nullglob
+          cnt=$(ls "$CACHE_DIR"/*.fit 2>/dev/null | wc -l || true)
+          if [ "$cnt" -eq 0 ]; then
+            echo "No FIT files were written to $CACHE_DIR"
+            echo "The CLI may have crashed before writing FITs. Re-run or check Renpho creds/profile name."
+            exit 1
+          fi
+
+      - name: Parse newest FIT and dump fields
+        run: |
+          python -m pip install --upgrade pip
           python - <<'PY'
-          import os, glob, json, sys
+          import os, glob, json
           from fitparse import FitFile
 
           cache = os.environ["CACHE_DIR"]
           fits = sorted(glob.glob(os.path.join(cache, "*.fit")), key=os.path.getmtime)
-          if not fits:
-              print("No FIT files found in cache path."); sys.exit(1)
           last = fits[-1]
           print(f"Newest FIT: {last}")
 
           fit = FitFile(last)
-          records = []
+          rows = []
           for msg in fit.get_messages():
-              for field in msg:
-                  try:
-                      val = field.value
-                  except Exception:
-                      val = None
-                  records.append({
-                      "message": msg.name,
-                      "field": field.name,
-                      "value": val,
-                      "units": getattr(field, "units", None),
-                  })
+            for f in msg:
+              try:
+                val = f.value
+              except Exception:
+                val = None
+              rows.append({
+                "message": msg.name,
+                "field": f.name,
+                "value": val,
+                "units": getattr(f, "units", None),
+              })
 
           wanted = {
-              "weight","bmi","body_fat","body_water","bone_mass","muscle_mass",
-              "visceral_fat","metabolic_age","basal_met","physique_rating",
-              "skeletal_muscle_mass","skeletal_muscle_percent"
+            "weight","bmi","body_fat","body_water","bone_mass","muscle_mass",
+            "visceral_fat","metabolic_age","basal_met","physique_rating",
+            "skeletal_muscle_mass","skeletal_muscle_percent"
           }
           print("\nSelected body-comp fields:")
-          for r in records:
-              if r["field"] in wanted:
-                  u = f" {r['units']}" if r.get("units") else ""
-                  print(f"- {r['field']}: {r['value']}{u}")
+          for r in rows:
+            if r["field"] in wanted:
+              u = f" {r['units']}" if r.get("units") else ""
+              print(f"- {r['field']}: {r['value']}{u}")
 
           out_json = os.path.join(cache, "last_fit_all_fields.json")
           with open(out_json, "w") as f:
-              json.dump(records, f, indent=2, default=str)
+            json.dump(rows, f, indent=2, default=str)
           print(f"\nSaved: {out_json}")
           PY
 
