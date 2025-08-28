@@ -33,19 +33,19 @@ jobs:
           }
           JSON
 
-      # Build without trimming or single-file
-      - name: Build CLI
+      # Publish a framework-dependent build (no RID, no trimming)
+      - name: Publish CLI (portable)
         working-directory: rgs
-        run: dotnet build -c Release
+        run: dotnet publish ./RenphoGarminSync.Console -c Release -o ./publish
 
       - name: Verify Renpho auth
         working-directory: rgs
-        run: dotnet run --project ./RenphoGarminSync.Console -- auth renpho --u "${{ secrets.RENPHO_EMAIL }}" --pw "${{ secrets.RENPHO_PASSWORD }}"
+        run: dotnet ./publish/RenphoGarminSync.Console.dll auth renpho --u "${{ secrets.RENPHO_EMAIL }}" --pw "${{ secrets.RENPHO_PASSWORD }}"
 
-      # Pull latest and WRITE .fit files, but no Garmin upload
+      # Generate FIT files without uploading to Garmin
       - name: Pull newest and save FIT files (no upload)
         working-directory: rgs
-        run: dotnet run --project ./RenphoGarminSync.Console -- sync \
+        run: dotnet ./publish/RenphoGarminSync.Console.dll sync \
                --gu "placeholder" --gpw "placeholder" \
                --ru "${{ secrets.RENPHO_EMAIL }}" --rpw "${{ secrets.RENPHO_PASSWORD }}" \
                --dry-run
@@ -53,8 +53,8 @@ jobs:
       - name: List generated files for debug
         if: always()
         run: |
-          echo "=== rgs-cache ==="
-          find rgs-cache -maxdepth 2 -type f -printf "%P\n" || true
+          echo "=== rgs-cache contents ==="
+          find rgs-cache -maxdepth 3 -type f -printf "%P\n" || true
 
       - name: Upload FIT files and cache
         if: always()
@@ -64,4 +64,3 @@ jobs:
           path: |
             rgs-cache
             rgs/config.json
-
