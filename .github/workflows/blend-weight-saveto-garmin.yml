@@ -12,8 +12,8 @@ jobs:
       GARMIN_EMAIL:    ${{ secrets.GARMIN_EMAIL }}
       GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
       GARMIN_MFA_CODE: ${{ secrets.GARMIN_MFA_CODE }}
-      # Use your repo-local token store
-      GARMIN_TOKENSTORE: garmin_agent/data/.garminconnect
+      # Tell garth/garminconnect to store tokens here
+      GARTH_HOME: garmin_agent/data/.garminconnect
       WEIGHT_STD: '0.6'
       WEIGHT_ATH: '0.4'
 
