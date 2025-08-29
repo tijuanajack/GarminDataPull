@@ -1,198 +1,205 @@
-name: Renpho Pull and Save FIT
+name: Pull Renpho (TJ-Ath) and save FIT + report
 
 on:
-  workflow_dispatch:
-    inputs:
-      profile:
-        description: Renpho profile name
-        required: false
-        default: TJ-Ath
-      garmin_mfa:
-        description: Enter the 6-digit Garmin MFA you just received (optional if token already cached)
-        required: false
-        default: ""
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  PROFILE: "TJ-Ath"
+  CACHE_DIR: "${{ github.workspace }}/garmin_agent/data"
+  SKIP_GARMIN_UPLOAD: "1"   # our shim key to bypass Garmin upload
 
 jobs:
   pull:
     runs-on: ubuntu-latest
-    env:
-      # Required secrets: set these in the repo → Settings → Secrets and variables → Actions → New repository secret
-      RENPHO_EMAIL: ${{ secrets.RENPHO_EMAIL }}
-      RENPHO_PASSWORD: ${{ secrets.RENPHO_PASSWORD }}
-      GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
-      GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
-      # Cache root for RGS
-      CACHE_DIR: ${{ github.workspace }}/garmin_agent/data
 
     steps:
-      - name: Checkout
+      - name: Checkout this repo
         uses: actions/checkout@v4
 
-      - name: Setup .NET 8 SDK and runtime
+      - name: Set up .NET 8 SDK and runtime
         uses: actions/setup-dotnet@v4
         with:
-          global-json-file: ""
           dotnet-version: |
             8.0.x
-          dotnet-quality: ga
 
       - name: Clone RenphoGarminSync-CLI
         run: |
           git clone https://github.com/forkerer/RenphoGarminSync-CLI.git rgs
-        working-directory: ${{ github.workspace }}
 
-      - name: Publish CLI
-        run: |
-          dotnet publish ./RenphoGarminSync.Console -c Release -r linux-x64 --self-contained false -o publish
-          ls -la publish
-        working-directory: ${{ github.workspace }}/rgs
-
-      - name: Configure cache path
-        shell: bash
+      - name: Ensure cache dirs and config
         run: |
           set -eux
           mkdir -p "${CACHE_DIR}"
           mkdir -p "${HOME}/Documents/GarminRenphoSync"
-          cat > "${{ github.workspace }}/rgs/config.json" <<JSON
+
+          # rgs config to force cache into CACHE_DIR
+          cat > rgs/config.json <<'JSON'
           {
             "UseDefaultCachePath": false,
-            "CustomCachePath": "${CACHE_DIR}"
+            "CustomCachePath": "${GITHUB_WORKSPACE}/garmin_agent/data"
           }
           JSON
-          cp "${{ github.workspace }}/rgs/config.json" "${HOME}/Documents/GarminRenphoSync/config.json"
+
+          # Some builds read from Documents/GarminRenphoSync/config.json too
+          cat > "${HOME}/Documents/GarminRenphoSync/config.json" <<'JSON'
+          {
+            "UseDefaultCachePath": false,
+            "CustomCachePath": "${GITHUB_WORKSPACE}/garmin_agent/data"
+          }
+          JSON
+
           echo "== rgs/config.json =="
-          cat "${{ github.workspace }}/rgs/config.json"
+          cat rgs/config.json
+          echo "== Documents/GarminRenphoSync/config.json =="
+          cat "${HOME}/Documents/GarminRenphoSync/config.json"
 
-      - name: Auth Renpho
-        run: |
-          ./publish/rgs auth renpho --u "${RENPHO_EMAIL}" --pw "${RENPHO_PASSWORD}"
-        working-directory: ${{ github.workspace }}/rgs
-
-      # Step 1 of Garmin auth triggers the email. Safe to run even if already cached.
-      - name: Garmin auth step 1 (trigger email)
-        continue-on-error: true
-        run: |
-          ./publish/rgs auth garmin --u "${GARMIN_EMAIL}" --pw "${GARMIN_PASSWORD}"
-        working-directory: ${{ github.workspace }}/rgs
-
-      # Step 2 actually applies the MFA if the user supplied one as an input
-      - name: Garmin auth step 2 (apply MFA if provided)
-        if: ${{ inputs.garmin_mfa != '' }}
-        run: |
-          ./publish/rgs auth garmin --u "${GARMIN_EMAIL}" --mfa "${{ inputs.garmin_mfa }}"
-        working-directory: ${{ github.workspace }}/rgs
-
-      # Run sync with real Garmin username so the CLI runs to the point where it generates FIT.
-      # We mark upload failures non-fatal so that FIT saving still gets processed and the workflow continues.
-      - name: Sync from Renpho (save FITs, upload non-fatal)
-        continue-on-error: true
-        env:
-          PROFILE: ${{ inputs.profile }}
+      - name: Add "skip Garmin upload" extension and patch call sites
+        working-directory: rgs
         run: |
           set -eux
-          # Clear previous FITs to make it obvious what was generated this run
+
+          # 1) Add a tiny extension method that no-ops uploads if SKIP_GARMIN_UPLOAD=1
+          cat > RenphoGarminSync.Console/UploadActivitySafe.cs <<'CS'
+          using System;
+          using System.Threading.Tasks;
+          using RenphoGarminSync.Garmin.Api;
+
+          namespace RenphoGarminSync.ConsoleApp
+          {
+              public static class GarminApiUploadSafeExtensions
+              {
+                  public static Task UploadActivitySafe(this GarminApi api, string fileName, byte[] content)
+                  {
+                      var skip = Environment.GetEnvironmentVariable("SKIP_GARMIN_UPLOAD");
+                      if (skip == "1")
+                      {
+                          Console.WriteLine($"[skip] Would upload {fileName} to Garmin. Skipping as requested.");
+                          return Task.CompletedTask;
+                      }
+                      return api.UploadActivity(fileName, content);
+                  }
+              }
+          }
+          CS
+
+          # 2) Replace calls to UploadActivity( with UploadActivitySafe(
+          #    This keeps the upstream code intact and only changes call sites at compile time.
+          grep -RIl --exclude-dir=bin --exclude-dir=obj 'UploadActivity(' RenphoGarminSync.Console | xargs -r sed -i 's/UploadActivity(/UploadActivitySafe(/g'
+
+      - name: Build CLI (linux-x64)
+        working-directory: rgs/RenphoGarminSync.Console
+        run: |
+          dotnet publish -c Release -r linux-x64 --self-contained false -o ../publish
+
+      - name: Auth Renpho (seeds session)
+        working-directory: rgs
+        env:
+          RENPHO_EMAIL: ${{ secrets.RENPHO_EMAIL }}
+          RENPHO_PASSWORD: ${{ secrets.RENPHO_PASSWORD }}
+        run: |
+          set -eux
+          ./publish/rgs auth renpho --u "${RENPHO_EMAIL}" --pw "${RENPHO_PASSWORD}"
+
+      - name: Pull and save latest FIT for TJ-Ath (Garmin upload is skipped)
+        working-directory: rgs
+        env:
+          RENPHO_EMAIL: ${{ secrets.RENPHO_EMAIL }}
+          RENPHO_PASSWORD: ${{ secrets.RENPHO_PASSWORD }}
+          SKIP_GARMIN_UPLOAD: ${{ env.SKIP_GARMIN_UPLOAD }}
+        run: |
+          set -eux
+          # Clean any stale *.fit
           rm -f "${CACHE_DIR}"/*.fit || true
+
+          # Pass a placeholder Garmin username to satisfy the CLI's required option.
+          # Upload calls will be no-oped by our extension.
           ./publish/rgs sync \
-            --gu "${GARMIN_EMAIL}" \
-            --gpw "${GARMIN_PASSWORD}" \
+            --gu "placeholder@example.com" \
             --ru "${RENPHO_EMAIL}" \
             --rpw "${RENPHO_PASSWORD}" \
             --renphoProfile "${PROFILE}"
+
           echo "== Cached files =="
           ls -la "${CACHE_DIR}"
-        working-directory: ${{ github.workspace }}/rgs
 
-      - name: Setup Python
+      - name: Set up Python for FIT parsing
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: '3.11'
 
-      - name: Install parser deps
+      - name: Install fitparse
         run: |
           python -m pip install --upgrade pip fitparse
 
-      - name: Parse newest FIT and dump all fields
-        id: parse_fit
-        shell: bash
+      - name: Parse latest FIT and print all fields
+        env:
+          CACHE_DIR: ${{ env.CACHE_DIR }}
         run: |
           python - <<'PY'
-          import os, glob, sys, json
+          import os, glob, json
           from fitparse import FitFile
 
-          cache = os.environ.get("CACHE_DIR")
-          if not cache:
-            print("CACHE_DIR not set")
-            sys.exit(2)
-
+          cache = os.environ["CACHE_DIR"]
           fits = sorted(glob.glob(os.path.join(cache, "*.fit")), key=os.path.getmtime)
           if not fits:
-            print("No FIT files found in", cache)
-            sys.exit(0)
+              print(f"No FIT files found in {cache}")
+              raise SystemExit(1)
 
           last = fits[-1]
-          ff = FitFile(last)
+          print(f"Parsing: {last}")
 
-          all_msgs = []
-          for m in ff.get_messages():
-            msg = {"name": m.name, "fields": {}}
-            for f in m:
-              if hasattr(f, "name"):
-                try:
-                  v = f.value
-                except Exception:
-                  v = None
-                if v is not None:
-                  msg["fields"][f.name] = v
-            if msg["fields"]:
-              all_msgs.append(msg)
+          fit = FitFile(last)
+          fit.parse()
 
-          # Pull out weight_scale metrics if present
-          latest_weight_scale = None
-          for msg in all_msgs:
-            if msg["name"] == "weight_scale":
-              latest_weight_scale = msg["fields"]
+          # Collect all fields from the last body_composition message
+          latest_msg = None
+          for msg in fit.get_messages():
+              if msg.name == "body_composition":
+                  latest_msg = msg
 
-          report = []
-          report.append(f"# Renpho newest FIT parse\n")
-          report.append(f"**File:** {os.path.basename(last)}\n")
-          if latest_weight_scale:
-            ws = latest_weight_scale
-            def val(key, unit=""):
-              return f"{ws[key]}{unit}" if key in ws else "n/a"
-            report.append("## Weight scale summary\n")
-            report.append(f"- Weight: {val('weight', ' kg')}")
-            report.append(f"- Body fat: {val('percent_fat', ' %')}")
-            report.append(f"- Hydration: {val('percent_hydration', ' %')}")
-            report.append(f"- Bone mass: {val('bone_mass', ' kg')}")
-            report.append(f"- Muscle mass: {val('muscle_mass', ' kg')}")
-            report.append(f"- BMR: {val('basal_met', ' kcal/day')}")
-            report.append(f"- Metabolic age: {val('metabolic_age', ' y')}")
-            report.append(f"- Visceral fat rating: {val('visceral_fat_rating')}")
-            report.append(f"- BMI: {val('bmi')}")
-            report.append("")
+          rows = []
+          if latest_msg:
+              row = {}
+              for d in latest_msg:
+                  row[d.name] = d.value
+              rows.append(row)
+
+          # Fallback: no specific body_composition found, collect last record
+          if not rows:
+              for msg in reversed(list(fit.get_messages("record"))):
+                  row = {}
+                  for d in msg:
+                      row[d.name] = d.value
+                  rows.append(row)
+                  break
+
+          # Write a human readable and a JSON file
+          md = [f"# Latest TJ-Ath body composition from FIT", "", f"Source file: `{os.path.basename(last)}`", ""]
+          if rows:
+              md.append("## Fields")
+              for k, v in sorted(rows[0].items()):
+                  md.append(f"- {k}: {v}")
           else:
-            report.append("_No `weight_scale` message found in FIT. Full message dump below._\n")
+              md.append("_No body composition fields found_")
 
-          report.append("## All messages (non-empty fields)\n")
-          for msg in all_msgs:
-            report.append(f"### {msg['name']}")
-            for k, v in msg["fields"].items():
-              report.append(f"- {k}: {v}")
-            report.append("")
+          md_path = os.path.join(cache, "latest_fit_report.md")
+          json_path = os.path.join(cache, "latest_fit_report.json")
+          with open(md_path, "w") as f:
+              f.write("\n".join(md))
+          with open(json_path, "w") as f:
+              json.dump(rows[0] if rows else {}, f, indent=2)
 
-          md = "\n".join(report)
-          out = os.path.join(cache, "latest_fit_report.md")
-          with open(out, "w", encoding="utf-8") as f:
-            f.write(md)
-          print(md)
-          print(f"\nWrote: {out}")
+          print("\n".join(md))
           PY
 
-      - name: Upload cache and report
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: renpho-fit-cache-and-report
+          name: renpho-fit-and-report
           path: |
-            ${{ env.CACHE_DIR }}/*.fit
-            ${{ env.CACHE_DIR }}/latest_fit_report.md
-          if-no-files-found: warn
+            garmin_agent/data/*.fit
+            garmin_agent/data/latest_fit_report.md
+            garmin_agent/data/latest_fit_report.json
