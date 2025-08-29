@@ -1,12 +1,1 @@
-{
-  "weight_lb": 196.4,
-  "muscle_mass_lb": 159.0,
-  "skeletal_muscle_percent": 55.1,
-  "bone_mass_lb": 8.4,
-  "visceral_fat": 9,
-  "body_fat_percent": 14.7,
-  "body_water_percent": 61.6,
-  "bmi": 25.9,
-  "bmr_kcal": 2023,
-  "metabolic_age": 47
-}
+{"weight_lb":196.5,"muscle_mass_lb":159.0,"skeletal_muscle_percent":55.1,"bone_mass_lb":8.4,"visceral_fat":9,"body_fat_percent":14.7,"body_water_percent":61.6,"bmi":25.9,"bmr_kcal":2023,"metabolic_age":47}
