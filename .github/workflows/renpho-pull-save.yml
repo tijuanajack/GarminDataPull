@@ -9,7 +9,7 @@ permissions:
 env:
   PROFILE: "TJ-Ath"
   CACHE_DIR: "${{ github.workspace }}/garmin_agent/data"
-  SKIP_GARMIN_UPLOAD: "1"   # our shim key to bypass Garmin upload
+  SKIP_GARMIN_UPLOAD: "1"   # shim env that disables Garmin uploads inside the CLI
 
 jobs:
   pull:
@@ -35,7 +35,7 @@ jobs:
           mkdir -p "${CACHE_DIR}"
           mkdir -p "${HOME}/Documents/GarminRenphoSync"
 
-          # rgs config to force cache into CACHE_DIR
+          # Force the CLI to use our workspace cache directory
           cat > rgs/config.json <<'JSON'
           {
             "UseDefaultCachePath": false,
@@ -61,7 +61,7 @@ jobs:
         run: |
           set -eux
 
-          # 1) Add a tiny extension method that no-ops uploads if SKIP_GARMIN_UPLOAD=1
+          # 1) Add a safe extension that no-ops uploads when SKIP_GARMIN_UPLOAD=1
           cat > RenphoGarminSync.Console/UploadActivitySafe.cs <<'CS'
           using System;
           using System.Threading.Tasks;
@@ -71,30 +71,33 @@ jobs:
           {
               public static class GarminApiUploadSafeExtensions
               {
-                  public static Task UploadActivitySafe(this GarminApi api, string fileName, byte[] content)
+                  // Target the interface so call sites that hold IGarminApi bind correctly
+                  public static Task UploadActivitySafe(this IGarminApi api, string fileName, byte[] content)
                   {
                       var skip = Environment.GetEnvironmentVariable("SKIP_GARMIN_UPLOAD");
-                      if (skip == "1")
+                      if (string.Equals(skip, "1", StringComparison.Ordinal))
                       {
-                          Console.WriteLine($"[skip] Would upload {fileName} to Garmin. Skipping as requested.");
+                          // Fully qualify to avoid the RenphoGarminSync.Console namespace collision
+                          global::System.Console.WriteLine($"[skip] Would upload {fileName} to Garmin. Skipping as requested.");
                           return Task.CompletedTask;
                       }
+
                       return api.UploadActivity(fileName, content);
                   }
               }
           }
           CS
 
-          # 2) Replace calls to UploadActivity( with UploadActivitySafe(
-          #    This keeps the upstream code intact and only changes call sites at compile time.
-          grep -RIl --exclude-dir=bin --exclude-dir=obj 'UploadActivity(' RenphoGarminSync.Console | xargs -r sed -i 's/UploadActivity(/UploadActivitySafe(/g'
+          # 2) Replace call sites UploadActivity( -> UploadActivitySafe(, excluding the shim itself
+          find RenphoGarminSync.Console -type f -name '*.cs' ! -name 'UploadActivitySafe.cs' -print0 \
+            | xargs -0 sed -i 's/UploadActivity(/UploadActivitySafe(/g'
 
       - name: Build CLI (linux-x64)
         working-directory: rgs/RenphoGarminSync.Console
         run: |
           dotnet publish -c Release -r linux-x64 --self-contained false -o ../publish
 
-      - name: Auth Renpho (seeds session)
+      - name: Auth Renpho (seed session)
         working-directory: rgs
         env:
           RENPHO_EMAIL: ${{ secrets.RENPHO_EMAIL }}
@@ -109,13 +112,14 @@ jobs:
           RENPHO_EMAIL: ${{ secrets.RENPHO_EMAIL }}
           RENPHO_PASSWORD: ${{ secrets.RENPHO_PASSWORD }}
           SKIP_GARMIN_UPLOAD: ${{ env.SKIP_GARMIN_UPLOAD }}
+          GITHUB_WORKSPACE: ${{ github.workspace }}
         run: |
           set -eux
-          # Clean any stale *.fit
+
+          # Clean any stale FITs
           rm -f "${CACHE_DIR}"/*.fit || true
 
-          # Pass a placeholder Garmin username to satisfy the CLI's required option.
-          # Upload calls will be no-oped by our extension.
+          # CLI requires a Garmin username option, pass a placeholder
           ./publish/rgs sync \
             --gu "placeholder@example.com" \
             --ru "${RENPHO_EMAIL}" \
@@ -154,29 +158,26 @@ jobs:
           fit = FitFile(last)
           fit.parse()
 
-          # Collect all fields from the last body_composition message
-          latest_msg = None
-          for msg in fit.get_messages():
-              if msg.name == "body_composition":
-                  latest_msg = msg
+          # Try body_composition first
+          latest_bc = None
+          for msg in fit.get_messages("body_composition"):
+              latest_bc = msg  # keep last
 
           rows = []
-          if latest_msg:
+          if latest_bc:
               row = {}
-              for d in latest_msg:
+              for d in latest_bc:
                   row[d.name] = d.value
               rows.append(row)
-
-          # Fallback: no specific body_composition found, collect last record
-          if not rows:
-              for msg in reversed(list(fit.get_messages("record"))):
+          else:
+              # Fallback to last record if body_composition is not present
+              recs = list(fit.get_messages("record"))
+              if recs:
                   row = {}
-                  for d in msg:
+                  for d in recs[-1]:
                       row[d.name] = d.value
                   rows.append(row)
-                  break
 
-          # Write a human readable and a JSON file
           md = [f"# Latest TJ-Ath body composition from FIT", "", f"Source file: `{os.path.basename(last)}`", ""]
           if rows:
               md.append("## Fields")
