@@ -1,206 +1,37 @@
-name: Pull Renpho (TJ-Ath) and save FIT + report
+name: Daily Garmin Blended Sync
 
 on:
-  workflow_dispatch: {}
-
-permissions:
-  contents: read
-
-env:
-  PROFILE: "TJ-Ath"
-  CACHE_DIR: "${{ github.workspace }}/garmin_agent/data"
-  SKIP_GARMIN_UPLOAD: "1"   # shim env that disables Garmin uploads inside the CLI
+  schedule:
+    - cron: '0 15 * * *'
+  workflow_dispatch:
 
 jobs:
-  pull:
+  garmin:
     runs-on: ubuntu-latest
+    env:
+      GARMIN_EMAIL:    ${{ secrets.GARMIN_EMAIL }}
+      GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
+      GARMIN_MFA_CODE: ${{ secrets.GARMIN_MFA_CODE }}
+      GARMIN_TOKENSTORE: .garmin-oauth
+      WEIGHT_STD: '0.6'   # Standard weighted by default
+      WEIGHT_ATH: '0.4'
 
     steps:
-      - name: Checkout this repo
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up .NET 8 SDK and runtime
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: |
-            8.0.x
-
-      - name: Clone RenphoGarminSync-CLI
-        run: |
-          git clone https://github.com/forkerer/RenphoGarminSync-CLI.git rgs
-
-      - name: Ensure cache dirs and config
-        run: |
-          set -eux
-          mkdir -p "${CACHE_DIR}"
-          mkdir -p "${HOME}/Documents/GarminRenphoSync"
-
-          # Force the CLI to use our workspace cache directory
-          cat > rgs/config.json <<'JSON'
-          {
-            "UseDefaultCachePath": false,
-            "CustomCachePath": "${GITHUB_WORKSPACE}/garmin_agent/data"
-          }
-          JSON
-
-          # Some builds read from Documents/GarminRenphoSync/config.json too
-          cat > "${HOME}/Documents/GarminRenphoSync/config.json" <<'JSON'
-          {
-            "UseDefaultCachePath": false,
-            "CustomCachePath": "${GITHUB_WORKSPACE}/garmin_agent/data"
-          }
-          JSON
-
-          echo "== rgs/config.json =="
-          cat rgs/config.json
-          echo "== Documents/GarminRenphoSync/config.json =="
-          cat "${HOME}/Documents/GarminRenphoSync/config.json"
-
-      - name: Add "skip Garmin upload" extension and patch call sites
-        working-directory: rgs
-        run: |
-          set -eux
-
-          # 1) Add a safe extension that no-ops uploads when SKIP_GARMIN_UPLOAD=1
-          cat > RenphoGarminSync.Console/UploadActivitySafe.cs <<'CS'
-          using System;
-          using System.Threading.Tasks;
-          using RenphoGarminSync.Garmin.Api;
-
-          namespace RenphoGarminSync.ConsoleApp
-          {
-              public static class GarminApiUploadSafeExtensions
-              {
-                  // Target the interface so call sites that hold IGarminApi bind correctly
-                  public static Task UploadActivitySafe(this IGarminApi api, string fileName, byte[] content)
-                  {
-                      var skip = Environment.GetEnvironmentVariable("SKIP_GARMIN_UPLOAD");
-                      if (string.Equals(skip, "1", StringComparison.Ordinal))
-                      {
-                          // Fully qualify to avoid the RenphoGarminSync.Console namespace collision
-                          global::System.Console.WriteLine($"[skip] Would upload {fileName} to Garmin. Skipping as requested.");
-                          return Task.CompletedTask;
-                      }
-
-                      return api.UploadActivity(fileName, content);
-                  }
-              }
-          }
-          CS
-
-          # 2) Replace call sites UploadActivity( -> UploadActivitySafe(, excluding the shim itself
-          find RenphoGarminSync.Console -type f -name '*.cs' ! -name 'UploadActivitySafe.cs' -print0 \
-            | xargs -0 sed -i 's/UploadActivity(/UploadActivitySafe(/g'
-
-      - name: Build CLI (linux-x64)
-        working-directory: rgs/RenphoGarminSync.Console
-        run: |
-          dotnet publish -c Release -r linux-x64 --self-contained false -o ../publish
-
-      - name: Auth Renpho (seed session)
-        working-directory: rgs
-        env:
-          RENPHO_EMAIL: ${{ secrets.RENPHO_EMAIL }}
-          RENPHO_PASSWORD: ${{ secrets.RENPHO_PASSWORD }}
-        run: |
-          set -eux
-          ./publish/rgs auth renpho --u "${RENPHO_EMAIL}" --pw "${RENPHO_PASSWORD}"
-
-      - name: Pull and save latest FIT for TJ-Ath (Garmin upload is skipped)
-        working-directory: rgs
-        env:
-          RENPHO_EMAIL: ${{ secrets.RENPHO_EMAIL }}
-          RENPHO_PASSWORD: ${{ secrets.RENPHO_PASSWORD }}
-          SKIP_GARMIN_UPLOAD: ${{ env.SKIP_GARMIN_UPLOAD }}
-          GITHUB_WORKSPACE: ${{ github.workspace }}
-        run: |
-          set -eux
-
-          # Clean any stale FITs
-          rm -f "${CACHE_DIR}"/*.fit || true
-
-          # CLI requires a Garmin username option, pass a placeholder
-          ./publish/rgs sync \
-            --gu "placeholder@example.com" \
-            --ru "${RENPHO_EMAIL}" \
-            --rpw "${RENPHO_PASSWORD}" \
-            --renphoProfile "${PROFILE}"
-
-          echo "== Cached files =="
-          ls -la "${CACHE_DIR}"
-
-      - name: Set up Python for FIT parsing
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.10'
 
-      - name: Install fitparse
+      - name: Install deps
         run: |
-          python -m pip install --upgrade pip fitparse
+          python -m pip install --upgrade pip
+          pip install garminconnect
 
-      - name: Parse latest FIT and print all fields
-        env:
-          CACHE_DIR: ${{ env.CACHE_DIR }}
-        run: |
-          python - <<'PY'
-          import os, glob, json
-          from fitparse import FitFile
+      - name: Blend metrics
+        run: python garmin_agent/blend_for_garmin.py
 
-          cache = os.environ["CACHE_DIR"]
-          fits = sorted(glob.glob(os.path.join(cache, "*.fit")), key=os.path.getmtime)
-          if not fits:
-              print(f"No FIT files found in {cache}")
-              raise SystemExit(1)
-
-          last = fits[-1]
-          print(f"Parsing: {last}")
-
-          fit = FitFile(last)
-          fit.parse()
-
-          # Try body_composition first
-          latest_bc = None
-          for msg in fit.get_messages("body_composition"):
-              latest_bc = msg  # keep last
-
-          rows = []
-          if latest_bc:
-              row = {}
-              for d in latest_bc:
-                  row[d.name] = d.value
-              rows.append(row)
-          else:
-              # Fallback to last record if body_composition is not present
-              recs = list(fit.get_messages("record"))
-              if recs:
-                  row = {}
-                  for d in recs[-1]:
-                      row[d.name] = d.value
-                  rows.append(row)
-
-          md = [f"# Latest TJ-Ath body composition from FIT", "", f"Source file: `{os.path.basename(last)}`", ""]
-          if rows:
-              md.append("## Fields")
-              for k, v in sorted(rows[0].items()):
-                  md.append(f"- {k}: {v}")
-          else:
-              md.append("_No body composition fields found_")
-
-          md_path = os.path.join(cache, "latest_fit_report.md")
-          json_path = os.path.join(cache, "latest_fit_report.json")
-          with open(md_path, "w") as f:
-              f.write("\n".join(md))
-          with open(json_path, "w") as f:
-              json.dump(rows[0] if rows else {}, f, indent=2)
-
-          print("\n".join(md))
-          PY
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: renpho-fit-and-report
-          path: |
-            garmin_agent/data/*.fit
-            garmin_agent/data/latest_fit_report.md
-            garmin_agent/data/latest_fit_report.json
+      - name: Push to Garmin with saved OAuth
+        run: python garmin_agent/push_blended_with_saved_oauth.py
