@@ -14,13 +14,14 @@ def main():
     password = os.environ["GARMIN_PASSWORD"]
     mfa_code = os.environ.get("GARMIN_MFA_CODE", "")
 
-    # Use your specified tokenstore directory
-    # GarminDataPull/garmin_agent/data/.garminconnect/
-    tokenstore = Path(os.environ.get("GARMIN_TOKENSTORE", "garmin_agent/data/.garminconnect"))
-    tokenstore.mkdir(parents=True, exist_ok=True)
+    # Ensure the GARTH_HOME directory exists (set in workflow env)
+    garth_home = Path(os.environ.get("GARTH_HOME", "garmin_agent/data/.garminconnect"))
+    garth_home.mkdir(parents=True, exist_ok=True)
 
-    # Pass tokenstore to Garmin so garth uses it for OAuth1/OAuth2
-    client = Garmin(email, password, tokenstore=tokenstore)
+    # Instantiate without tokenstore kwarg (not supported in your build)
+    client = Garmin(email, password)
+
+    # First run may require MFA to seed tokens
     client.login()
     if mfa_code:
         try:
