@@ -1,6 +1,9 @@
+# garmin_agent/push_blended_using_agent_login.py
 from pathlib import Path
-import os, json, sys
-from garminconnect import Garmin
+import json, os, sys
+
+# reuse your proven login() exactly as implemented in garmin_to_drive.py
+from garmin_agent.garmin_to_drive import login
 
 def main():
     here = Path(__file__).parent
@@ -8,35 +11,25 @@ def main():
     if not payload_path.exists():
         print("Missing garmin_payload.json. Run blend_for_garmin.py first.", file=sys.stderr)
         sys.exit(2)
+
     p = json.load(open(payload_path))
 
     email = os.environ["GARMIN_EMAIL"]
-    password = os.environ["GARMIN_PASSWORD"]
-    mfa_code = os.environ.get("GARMIN_MFA_CODE", "")
+    pwd   = os.environ["GARMIN_PASSWORD"]
+    mfa   = os.environ.get("GARMIN_MFA_CODE")
 
-    # Ensure the GARTH_HOME directory exists (set in workflow env)
-    garth_home = Path(os.environ.get("GARTH_HOME", "garmin_agent/data/.garminconnect"))
-    garth_home.mkdir(parents=True, exist_ok=True)
+    # this uses the same token dir and flow you already rely on
+    g = login(email, pwd, mfa)
 
-    # Instantiate without tokenstore kwarg (not supported in your build)
-    client = Garmin(email, password)
-
-    # First run may require MFA to seed tokens
-    client.login()
-    if mfa_code:
-        try:
-            client.send_mfa_code(mfa_code)
-        except Exception:
-            pass
-
-    resp = client.add_body_composition(
+    # send exactly like your Colab
+    resp = g.add_body_composition(
         p["date"],
         weight=p["weight"],
         percent_fat=p["percent_fat"],
         percent_hydration=p["percent_hydration"],
         visceral_fat_mass=p["visceral_fat_mass"],
         bone_mass=p["bone_mass"],
-        muscle_mass=p["muscle_mass"],
+        muscle_mass=p["muscle_mass"],       # skeletal mass
         basal_met=p["basal_met"],
         active_met=p["active_met"],
         physique_rating=p["physique_rating"],
