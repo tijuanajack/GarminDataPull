@@ -13,15 +13,15 @@ def main():
     email = os.environ["GARMIN_EMAIL"]
     password = os.environ["GARMIN_PASSWORD"]
     mfa_code = os.environ.get("GARMIN_MFA_CODE", "")
-    tokenstore = Path(os.environ.get("GARMIN_TOKENSTORE", ".garmin-oauth"))
+
+    # Use your specified tokenstore directory
+    # GarminDataPull/garmin_agent/data/.garminconnect/
+    tokenstore = Path(os.environ.get("GARMIN_TOKENSTORE", "garmin_agent/data/.garminconnect"))
     tokenstore.mkdir(parents=True, exist_ok=True)
 
-    client = Garmin(email, password)
-    try:
-        client.login()
-    except TypeError:
-        client.login(tokenstore=tokenstore)
-
+    # Pass tokenstore to Garmin so garth uses it for OAuth1/OAuth2
+    client = Garmin(email, password, tokenstore=tokenstore)
+    client.login()
     if mfa_code:
         try:
             client.send_mfa_code(mfa_code)
