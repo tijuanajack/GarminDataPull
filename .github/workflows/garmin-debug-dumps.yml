@@ -44,7 +44,7 @@ jobs:
           name: garmin-dumps
           path: |
             garmin_agent/data/activities_list.json
-            garmin_agent/data/activities_details.jsonl
+            garmin_agent/data/activities_details.json
 
       # Optional: commit dumps to the repo (private)
       - name: Commit dumps to repo
