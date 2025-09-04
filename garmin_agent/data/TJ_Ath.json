@@ -1,12 +1,12 @@
 {
-  "weight_lb": 195.8,
-  "muscle_mass_lb": 158.6,
-  "skeletal_muscle_percent": 55.1,
+  "weight_lb": 196.8,
+  "muscle_mass_lb": 159.2,
+  "skeletal_muscle_percent": 55,
   "bone_mass_lb": 8.4,
   "visceral_fat": 9,
-  "body_fat_percent": 14.7,
-  "body_water_percent": 61.6,
-  "bmi": 25.8,
-  "bmr_kcal": 2019,
+  "body_fat_percent": 14.8,
+  "body_water_percent": 61.5,
+  "bmi": 26,
+  "bmr_kcal": 2027,
   "metabolic_age": 47
 }
