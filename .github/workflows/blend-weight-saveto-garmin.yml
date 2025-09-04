@@ -1,4 +1,4 @@
-name: Daily Garmin Blended Sync
+name: Daily Garmin Blended Weight Sync
 
 on:
   schedule:
