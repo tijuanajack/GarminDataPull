@@ -16,8 +16,8 @@ def need(d: dict, k: str):
 def main():
     here = Path(__file__).parent
     data_dir = here / "data"
-    ath = json.load(open(data_dir / "tj_ath.json"))
-    std = json.load(open(data_dir / "tj_standard.json"))
+    ath = json.load(open(data_dir / "TJ_Ath.json"))
+    std = json.load(open(data_dir / "TJ_Standard.json"))
 
     w_std = float(os.getenv("WEIGHT_STD", "0.6"))
     w_ath = float(os.getenv("WEIGHT_ATH", "0.4"))
