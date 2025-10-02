@@ -1,12 +1,12 @@
 {
-  "weight_lb": 195.2,
-  "muscle_mass_lb": 146.4,
-  "skeletal_muscle_percent": 50.9,
-  "bone_mass_lb": 7.6,
+  "weight_lb": 194.4,
+  "muscle_mass_lb": 146,
+  "skeletal_muscle_percent": 51,
+  "bone_mass_lb": 7.8,
   "visceral_fat": 9,
-  "body_fat_percent": 21.1,
-  "body_water_percent": 57,
-  "bmi": 25.7,
-  "bmr_kcal": 1859,
+  "body_fat_percent": 20.9,
+  "body_water_percent": 57.1,
+  "bmi": 25.6,
+  "bmr_kcal": 1894,
   "metabolic_age": 47
 }
