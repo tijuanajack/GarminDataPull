@@ -54,6 +54,7 @@ jobs:
           git config user.email "actions@github.com"
           git add garmin_agent/data/*.csv
           git commit -m "🔄 update summary $(date +'%Y-%m-%d')" || echo "no changes"
+          git pull --rebase origin main
           git push https://x-access-token:${TOKEN}@github.com/${{ github.repository }}.git HEAD:main
       - name: 🚀 Push latest_summary.csv to public repo
         env:
