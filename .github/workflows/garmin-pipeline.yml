@@ -44,7 +44,7 @@ jobs:
           git add garmin_agent/data/latest_activity_summary.csv
           git commit -m "update activities $(date +'%Y-%m-%d')" || echo "no changes"
           git pull --rebase https://x-access-token:${TOKEN}@github.com/${{ github.repository }}.git main || echo "No remote changes"
-          git push https://x-access-token:${TOKEN}@github.com/${{ github.repository }}.git HEAD:mainn
+          git push https://x-access-token:${TOKEN}@github.com/${{ github.repository }}.git HEAD:main
 
       - name: Push latest_activity_summary.csv to public repo
         env:
