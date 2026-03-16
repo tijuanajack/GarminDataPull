@@ -32,7 +32,7 @@ jobs:
       - name: 📥 Checkout private repo
         uses: actions/checkout@v4
         with:
-          persist-credentials: false
+          persist-credentials: true
 
       - name: 🐍 Setup Python
         uses: actions/setup-python@v5
@@ -55,7 +55,7 @@ jobs:
           git add garmin_agent/data/*.csv
           git commit -m "🔄 update summary $(date +'%Y-%m-%d')" || echo "no changes"
           git pull --rebase origin main
-          git push https://x-access-token:${TOKEN}@github.com/${{ github.repository }}.git HEAD:main
+          git push 
       - name: 🚀 Push latest_summary.csv to public repo
         env:
           TOKEN: ${{ secrets.PUBLIC_REPO_PUSH_TOKEN }}
