@@ -1,13 +1,13 @@
 from pathlib import Path
-import json, os, sys
+import json
+import os
+import sys
 
-# ensure we can import garmin_to_drive.py sitting next to this file
-here = Path(__file__).parent
-sys.path.insert(0, str(here))
+from auth import login
 
-from garmin_to_drive import login
 
 def main():
+    here = Path(__file__).parent
     payload_path = here / "data" / "garmin_payload.json"
     if not payload_path.exists():
         print("Missing garmin_payload.json. Run blend_for_garmin.py first.", file=sys.stderr)
@@ -15,8 +15,8 @@ def main():
 
     p = json.load(open(payload_path))
     email = os.environ["GARMIN_EMAIL"]
-    pwd   = os.environ["GARMIN_PASSWORD"]
-    mfa   = os.environ.get("GARMIN_MFA_CODE")
+    pwd = os.environ["GARMIN_PASSWORD"]
+    mfa = os.environ.get("GARMIN_MFA_CODE")
 
     g = login(email, pwd, mfa)
 
@@ -37,6 +37,7 @@ def main():
     )
     print("Push response:", resp)
     print("Uploaded for", p["date"])
+
 
 if __name__ == "__main__":
     main()
