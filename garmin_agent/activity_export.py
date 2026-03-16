@@ -3,24 +3,16 @@
 # Primary source: get_activities_by_date() list objects (your account does NOT include summaryDTO there)
 # Avoids depending on get_activity_details(); uses list fields + splitSummaries directly.
 
-from garminconnect import Garmin
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
-import pandas as pd, json, os
+import os
+import json
+
+import pandas as pd
+
+from auth import login
 
 # ---------- helpers ----------
-def login(email, pwd, mfa=None):
-    store = Path(__file__).parent / "data" / ".garminconnect"
-    try:
-        g = Garmin(); g.login(str(store)); return g
-    except Exception:
-        g = Garmin(email=email, password=pwd, is_cn=False, return_on_mfa=True)
-        s1, s2 = g.login()
-        if s1 == "needs_mfa":
-            if not mfa: raise RuntimeError("MFA required")
-            g.resume_login(s2, mfa)
-        g.garth.dump(str(store)); return g
-
 def iso_to_dt(s):
     if not s: return None
     s = s.replace("Z", "+00:00")

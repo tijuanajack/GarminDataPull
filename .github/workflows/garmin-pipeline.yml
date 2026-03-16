@@ -36,6 +36,7 @@ jobs:
         run: python garmin_agent/activity_export.py
 
       - name: Commit activity CSV to private repo
+        if: ${{ github.ref == 'refs/heads/main' }}
         env:
           TOKEN: ${{ secrets.PRIVATE_REPO_PUSH_TOKEN }}
         run: |
@@ -43,9 +44,10 @@ jobs:
           git config user.email "actions@github.com"
           git add garmin_agent/data/latest_activity_summary.csv
           git commit -m "update activities $(date +'%Y-%m-%d')" || echo "no changes"
-          git push https://x-access-token:${TOKEN}@github.com/${{ github.repository }}.git HEAD:main
+          git push https://x-access-token:${TOKEN}@github.com/${{ github.repository }}.git HEAD:main || echo "::warning::Push to main was rejected (non-fast-forward). Re-run workflow after main updates."
 
       - name: Push latest_activity_summary.csv to public repo
+        if: ${{ github.ref == 'refs/heads/main' }}
         env:
           TOKEN: ${{ secrets.PUBLIC_REPO_PUSH_TOKEN }}
         run: |

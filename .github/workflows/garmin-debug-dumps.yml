@@ -48,12 +48,12 @@ jobs:
 
       # Optional: commit dumps to the repo (private)
       - name: Commit dumps to repo
-        if: ${{ always() }}
+        if: ${{ always() && github.ref == 'refs/heads/main' }}
         env:
           TOKEN: ${{ secrets.PRIVATE_REPO_PUSH_TOKEN }}
         run: |
           git config user.name  "github-actions"
           git config user.email "actions@github.com"
-          git add garmin_agent/data/activities_list.json garmin_agent/data/activities_details.jsonl
+          git add garmin_agent/data/activities_list.json garmin_agent/data/activities_details.json
           git commit -m "debug dumps $(date +'%Y-%m-%dT%H:%M:%S')" || echo "no changes"
-          git push https://x-access-token:${TOKEN}@github.com/${{ github.repository }}.git HEAD:main
+          git push https://x-access-token:${TOKEN}@github.com/${{ github.repository }}.git HEAD:main || echo "::warning::Push to main was rejected (non-fast-forward). Re-run workflow after main updates."
