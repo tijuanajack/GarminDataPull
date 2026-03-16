@@ -1,29 +1,19 @@
 # garmin_agent/garmin_to_drive.py
-from garminconnect import Garmin
 from pathlib import Path
 from datetime import datetime, timedelta
-import pandas as pd, json, os
+import os
+
+import pandas as pd
+
+from auth import login
 
 # ---------- helpers ----------
 def as_dict(x):       return x if isinstance(x, dict) else {}
-def first(x):         return x[0] if isinstance(x, list) and x else {}
 def safe(obj, *keys):
     cur = obj
     for k in keys:
         cur = as_dict(cur).get(k, {})
     return cur or None
-
-def login(email, pwd, mfa=None):
-    store = Path(__file__).parent / "data" / ".garminconnect"
-    try:
-        g = Garmin(); g.login(str(store)); return g
-    except Exception:
-        g = Garmin(email=email, password=pwd, is_cn=False, return_on_mfa=True)
-        s1, s2 = g.login()
-        if s1 == "needs_mfa":
-            if not mfa: raise RuntimeError("MFA required")
-            g.resume_login(s2, mfa)
-        g.garth.dump(str(store)); return g
 
 # ---------- main ----------
 def main():
@@ -59,8 +49,6 @@ def main():
                 "hrv":              g.get_hrv_data(ds),
                 "hill":             g.get_hill_score(ds, ds),
                 "endur":            g.get_endurance_score(ds, ds),
-                "race":             g.get_race_predictions(),
-                "allstress":        g.get_all_day_stress(ds),
                 "fitage":           g.get_fitnessage_data(ds),
             }
 
@@ -69,8 +57,6 @@ def main():
                 if isinstance(v, list):
                     raw[k] = v[0] if v else {}
             # -----SPO HANDLER        
-            spo2_values = [d.get("spo2Value") for d in raw["spo2"].get("spo2Values", []) if d.get("spo2Value") not in (None, 0)]
-
             #----- PRINT VALUES For Troubleshootnig
             #print(json.dumps(raw["spo2"], indent=2))
 
@@ -84,12 +70,11 @@ def main():
                 "hrv_zone": safe(raw["hrv"], "hrvSummary", "status"),
                 "sleep_hrs": round((safe(raw["sleep"], "dailySleepDTO", "sleepTimeSeconds") or 0)/3600,2),
                 "sleep_score": safe(raw["sleep"], "dailySleepDTO", "sleepScores", "overall", "value"),
-                "sleep_rem_min": safe(raw["sleep"], "dailySleepDTO", "remSleepSeconds") // 60,
-                "sleep_deep_min": safe(raw["sleep"], "dailySleepDTO", "deepSleepSeconds") // 60,
-                "sleep_light_min": safe(raw["sleep"], "dailySleepDTO", "lightSleepSeconds") // 60,
-                "sleep_wake_min": safe(raw["sleep"], "dailySleepDTO", "awakeSleepSeconds") // 60,
+                "sleep_rem_min": (safe(raw["sleep"], "dailySleepDTO", "remSleepSeconds") or 0) // 60,
+                "sleep_deep_min": (safe(raw["sleep"], "dailySleepDTO", "deepSleepSeconds") or 0) // 60,
+                "sleep_light_min": (safe(raw["sleep"], "dailySleepDTO", "lightSleepSeconds") or 0) // 60,
+                "sleep_wake_min": (safe(raw["sleep"], "dailySleepDTO", "awakeSleepSeconds") or 0) // 60,
                 "spo2_lowest": safe(raw["spo2"], "lowestSpO2"),
-                "spo2_sleep_avg": safe(raw["spo2"], "avgSleepSpO2"),
                 "spo2_sleep_avg": safe(raw["spo2"], "avgSleepSpO2"),
                 "spo2_7d_avg": safe(raw["spo2"], "lastSevenDaysAvgSpO2"),
                 "steps":     safe(raw["activity_stats"], "totalSteps"),
@@ -103,12 +88,7 @@ def main():
                 "fitness_age": safe(raw["fitage"], "fitnessAge"),
                 "intensity_min_mod": safe(raw["activity_stats"], "moderateIntensityMinutes"),
                 "intensity_min_vig": safe(raw["activity_stats"], "vigorousIntensityMinutes"),
-
-# ─── average respiration ───
-"respiration_avg": (
-    safe(raw["sleep"], "dailySleepDTO", "averageRespirationValue")
-    or safe(first(raw["sleep"].get("dailySleepDTO", {})), "averageRespirationValue")
-),
+                "respiration_avg": safe(raw["sleep"], "dailySleepDTO", "averageRespirationValue"),
                 "acute_training_load": safe(raw["status"], "mostRecentTrainingStatus", "latestTrainingStatusData", "3449644769", "acuteTrainingLoadDTO", "acwrStatus"),
                 "training_need": safe(raw["status"], "mostRecentTrainingLoadBalance", "metricsTrainingLoadBalanceDTOMap", "3449644769", "trainingBalanceFeedbackPhrase"),
             }

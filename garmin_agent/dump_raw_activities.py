@@ -1,22 +1,12 @@
 # garmin_agent/dump_raw_activities.py
-from garminconnect import Garmin
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
-import os, json
+import json
+import os
+
+from auth import login
 
 # helpers
-def login(email, pwd, mfa=None):
-    store = Path(__file__).parent / "data" / ".garminconnect"
-    try:
-        g = Garmin(); g.login(str(store)); return g
-    except Exception:
-        g = Garmin(email=email, password=pwd, is_cn=False, return_on_mfa=True)
-        s1, s2 = g.login()
-        if s1 == "needs_mfa":
-            if not mfa: raise RuntimeError("MFA required")
-            g.resume_login(s2, mfa)
-        g.garth.dump(str(store)); return g
-
 def main():
     email = os.environ["GARMIN_EMAIL"]
     pwd   = os.environ["GARMIN_PASSWORD"]

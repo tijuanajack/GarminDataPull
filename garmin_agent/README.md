@@ -55,6 +55,22 @@ free.
    occur at the next scheduled time, or you can trigger it manually
    from the *Actions* tab.
 
+## First-time operator checklist (no Bash required)
+
+If you are brand new to Git/GitHub, this is the safest test-first path.
+
+1. **Use VS Code or GitHub Desktop** to open this repo and sign in to GitHub.
+2. **Work on a non-main branch** (for example `work`).
+3. **Push your branch** and open a Pull Request from `work` to `main`.
+4. **Run the workflow manually** in GitHub:
+   - Open **Actions** tab.
+   - Select the daily workflow.
+   - Click **Run workflow**.
+5. **Merge only after successful run output**. If the run fails, fix and re-push to
+   the same branch; your PR updates automatically.
+
+This flow lets you test safely before touching `main`.
+
 ## Notes
 
 * This automation uses the unofficial [`python-garminconnect`](https://github.com/cyberjunky/python-garminconnect)
@@ -65,3 +81,39 @@ free.
   for instructions on creating a service account and enabling the
   Drive API.  After creating a service account, generate a JSON key
   and paste its contents into the `GOOGLE_SERVICE_ACCOUNT_JSON` secret.
+
+## Authentication/token controls (future-proofing)
+
+All scripts now share a common auth helper (`auth.py`) so token behavior is consistent
+across exports and body-composition push flows.
+
+Environment options:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `GARMIN_TOKEN_CACHE_MODE` | `readwrite` | `readwrite` = use cached tokens + persist refreshed tokens, `readonly` = use cached tokens but never write, `off` = do not use token cache at all. |
+| `GARMIN_TOKEN_STORE_DIR` | `garmin_agent/data/.garminconnect` | Override where OAuth token files are read/written. Useful for CI secrets mounts or external persistent storage. |
+
+This lets you keep tokens out of git-managed paths, disable writes in locked environments,
+or bypass cached tokens entirely when debugging account auth issues.
+
+## Troubleshooting quick reference
+
+* **Auth/MFA failure:** set `GARMIN_MFA_CODE` and retry.
+* **Token cache appears stale:** temporarily set `GARMIN_TOKEN_CACHE_MODE=off`.
+* **Permission error writing tokens:** set `GARMIN_TOKEN_STORE_DIR` to a writable folder.
+* **Want safest first test:** set `GARMIN_TOKEN_CACHE_MODE=readonly`.
+
+## Rollback (safe)
+
+If a bad change is already merged, prefer a revert commit (no history rewrite):
+
+```bash
+git checkout main
+git pull
+git revert <bad_commit_sha>
+git push
+```
+
+If the change is only on your test branch, you can simply close the PR or reset the branch locally
+before pushing again.
