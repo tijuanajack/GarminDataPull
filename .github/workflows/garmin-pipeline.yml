@@ -3,8 +3,8 @@ name: Daily Garmin Activities Export
 on:
   schedule:
     # Run once daily at 7 AM Central
-    # - cron: '0 13 * * *'   # 07:00 CDT
-    # - cron: '0 14 * * *'   # 07:00 CST
+    - cron: '0 13 * * *'   # 07:00 CDT
+    - cron: '0 14 * * *'   # 07:00 CST
   workflow_dispatch:
 
 jobs:
