@@ -72,7 +72,13 @@ def _resolve_mfa_code(mfa: Optional[str]) -> str:
     return entered
 
 
-def login(email: str, password: str, mfa: Optional[str] = None) -> Garmin:
+def login(
+    email: str,
+    password: str,
+    mfa: Optional[str] = None,
+    *,
+    force_reauth: bool = False,
+) -> Garmin:
     """Authenticate with Garmin using the current upstream token flow first.
 
     The upstream project now centers auth around a single token directory configured via
@@ -82,25 +88,26 @@ def login(email: str, password: str, mfa: Optional[str] = None) -> Garmin:
     """
     token_store = _token_store_dir()
 
-    for token_dir in _candidate_token_store_dirs():
-        if not _has_token_files(token_dir):
-            continue
-        try:
-            g = Garmin()
-            g.login(str(token_dir))
-            return g
-        except GarminConnectTooManyRequestsError as exc:
-            raise GarminAuthError(
-                "Garmin rate-limited token refresh. Reusing cached tokens is still the right path, "
-                f"but Garmin rejected the refresh for {token_dir}: {exc}"
-            ) from exc
-        except (
-            FileNotFoundError,
-            GarthHTTPError,
-            GarminConnectAuthenticationError,
-            GarminConnectConnectionError,
-        ):
-            continue
+    if not force_reauth:
+        for token_dir in _candidate_token_store_dirs():
+            if not _has_token_files(token_dir):
+                continue
+            try:
+                g = Garmin()
+                g.login(str(token_dir))
+                return g
+            except GarminConnectTooManyRequestsError as exc:
+                raise GarminAuthError(
+                    "Garmin rate-limited token refresh. Reusing cached tokens is still the right path, "
+                    f"but Garmin rejected the refresh for {token_dir}: {exc}"
+                ) from exc
+            except (
+                FileNotFoundError,
+                GarthHTTPError,
+                GarminConnectAuthenticationError,
+                GarminConnectConnectionError,
+            ):
+                continue
 
     try:
         g = Garmin(email=email, password=password, is_cn=False, return_on_mfa=True)

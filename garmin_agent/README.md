@@ -121,6 +121,25 @@ The script will:
 That recreates the same "enter MFA once, keep using the saved token" flow you used originally.
 After that, rerun the GitHub workflow and let the cached token directory carry the session forward.
 
+Important behavior:
+
+* `python garmin_agent/bootstrap_tokens.py` now **forces a fresh Garmin login** even if old token files already exist.
+  That gives you a clean separate "login opportunity" specifically for re-entering MFA and minting a new token set.
+* You type the MFA code directly into that terminal prompt when the script asks `Enter Garmin MFA code:`.
+* If you instead want to test whether the existing token cache still works before forcing a new login, run:
+
+```bash
+python garmin_agent/bootstrap_tokens.py --reuse-existing
+```
+
+Suggested yearly refresh flow:
+
+1. Run `python garmin_agent/bootstrap_tokens.py` on your local machine.
+2. Enter email/password.
+3. Enter the MFA code when prompted.
+4. Confirm the refreshed files were written under `garmin_agent/data/.garminconnect`.
+5. Commit or otherwise persist those token files the same way you did previously, then rerun GitHub Actions.
+
 ## Troubleshooting quick reference
 
 * **Auth/MFA failure:** set `GARMIN_MFA_CODE` and retry.
