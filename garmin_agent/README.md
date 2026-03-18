@@ -92,7 +92,7 @@ Environment options:
 | Variable | Default | Purpose |
 |---|---|---|
 | `GARMIN_TOKEN_CACHE_MODE` | `readwrite` | `readwrite` = use cached tokens + persist refreshed tokens, `readonly` = use cached tokens but never write, `off` = do not use token cache at all. |
-| `GARMIN_TOKEN_STORE_DIR` | `garmin_agent/data/.garminconnect` | Override where OAuth token files are read/written. Useful for CI secrets mounts or external persistent storage. |
+| `GARMIN_TOKEN_STORE_DIR` | `garmin_agent/data/.garminconnect` | Override where OAuth token files are read/written. By default the auth helper reads both `garmin_agent/data/.garminconnect` and the legacy repo-root `data/.garminconnect`, then writes refreshed tokens back to both paths for compatibility. |
 
 This lets you keep tokens out of git-managed paths, disable writes in locked environments,
 or bypass cached tokens entirely when debugging account auth issues.
@@ -100,7 +100,8 @@ or bypass cached tokens entirely when debugging account auth issues.
 ## Troubleshooting quick reference
 
 * **Auth/MFA failure:** set `GARMIN_MFA_CODE` and retry.
-* **Token cache appears stale:** temporarily set `GARMIN_TOKEN_CACHE_MODE=off`.
+* **HTTP 429 / Too Many Requests:** the auth helper now stops immediately instead of retrying with password+MFA after a rate-limited token refresh; wait and rerun once Garmin clears the throttle.
+* **Token cache appears stale:** temporarily set `GARMIN_TOKEN_CACHE_MODE=off`; otherwise the helper first tries `garmin_agent/data/.garminconnect` and then `data/.garminconnect` before doing a password/MFA login.
 * **Permission error writing tokens:** set `GARMIN_TOKEN_STORE_DIR` to a writable folder.
 * **Want safest first test:** set `GARMIN_TOKEN_CACHE_MODE=readonly`.
 
