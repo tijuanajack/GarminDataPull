@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Iterable, Optional
 import os
+import sys
 
 from garth.exc import GarthException, GarthHTTPError
 from garminconnect import (
@@ -58,6 +59,19 @@ def _has_token_files(token_dir: Path) -> bool:
     return (token_dir / "oauth1_token.json").exists() and (token_dir / "oauth2_token.json").exists()
 
 
+def _resolve_mfa_code(mfa: Optional[str]) -> str:
+    """Use provided MFA code or prompt interactively when running in a TTY."""
+    if mfa:
+        return mfa
+    if not sys.stdin.isatty():
+        raise GarminAuthError("MFA required but GARMIN_MFA_CODE was not provided")
+
+    entered = input("Enter Garmin MFA code: ").strip()
+    if not entered:
+        raise GarminAuthError("MFA required but no MFA code was entered")
+    return entered
+
+
 def login(email: str, password: str, mfa: Optional[str] = None) -> Garmin:
     """Authenticate with Garmin using the current upstream token flow first.
 
@@ -92,9 +106,7 @@ def login(email: str, password: str, mfa: Optional[str] = None) -> Garmin:
         g = Garmin(email=email, password=password, is_cn=False, return_on_mfa=True)
         state, session = g.login()
         if state == "needs_mfa":
-            if not mfa:
-                raise GarminAuthError("MFA required but GARMIN_MFA_CODE was not provided")
-            g.resume_login(session, mfa)
+            g.resume_login(session, _resolve_mfa_code(mfa))
 
         token_store.mkdir(parents=True, exist_ok=True)
         g.garth.dump(str(token_store))

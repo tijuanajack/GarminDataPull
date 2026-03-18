@@ -104,6 +104,23 @@ Compatibility note:
   directory as a read-only fallback so older committed token stores can still be reused.
 * Fresh tokens are now written only to the canonical `GARMINTOKENS` location.
 
+### Refresh tokens locally with an MFA prompt
+
+If CI starts failing but local interactive login still works, bootstrap a fresh token store locally:
+
+```bash
+python garmin_agent/bootstrap_tokens.py
+```
+
+The script will:
+
+1. prompt for `GARMIN_EMAIL` and `GARMIN_PASSWORD` if they are not already exported,
+2. prompt for the MFA code when Garmin asks for it, and
+3. save the refreshed tokens into `GARMINTOKENS` (default: `garmin_agent/data/.garminconnect`).
+
+That recreates the same "enter MFA once, keep using the saved token" flow you used originally.
+After that, rerun the GitHub workflow and let the cached token directory carry the session forward.
+
 ## Troubleshooting quick reference
 
 * **Auth/MFA failure:** set `GARMIN_MFA_CODE` and retry.
