@@ -92,7 +92,9 @@ Environment options:
 | Variable | Default | Purpose |
 |---|---|---|
 | `GARMIN_TOKEN_CACHE_MODE` | `readwrite` | `readwrite` = use cached tokens + persist refreshed tokens, `readonly` = use cached tokens but never write, `off` = do not use token cache at all. |
-| `GARMIN_TOKEN_STORE_DIR` | `garmin_agent/data/.garminconnect` | Override where OAuth token files are read/written. Useful for CI secrets mounts or external persistent storage. |
+| `GARMIN_TOKEN_STORE_DIR` | `garmin_agent/data/.garminconnect` | Override where OAuth token files are read/written. By default the auth helper reads both `garmin_agent/data/.garminconnect` and the legacy repo-root `data/.garminconnect`, then writes refreshed tokens back to both paths for compatibility. |
+| `GARMIN_AUTH_MAX_ATTEMPTS` | `3` | How many times auth/token refresh should retry after Garmin returns HTTP 429 before giving up. |
+| `GARMIN_AUTH_RETRY_BASE_SECONDS` | `20` | Base delay for exponential backoff after HTTP 429 (`20`, `40`, `80`, ... seconds by default). |
 
 This lets you keep tokens out of git-managed paths, disable writes in locked environments,
 or bypass cached tokens entirely when debugging account auth issues.
@@ -100,7 +102,8 @@ or bypass cached tokens entirely when debugging account auth issues.
 ## Troubleshooting quick reference
 
 * **Auth/MFA failure:** set `GARMIN_MFA_CODE` and retry.
-* **Token cache appears stale:** temporarily set `GARMIN_TOKEN_CACHE_MODE=off`.
+* **HTTP 429 / Too Many Requests:** the auth helper now backs off and retries token/credential auth with exponential delays before failing; tune `GARMIN_AUTH_MAX_ATTEMPTS` and `GARMIN_AUTH_RETRY_BASE_SECONDS` if Garmin is throttling your runner.
+* **Token cache appears stale:** temporarily set `GARMIN_TOKEN_CACHE_MODE=off`; otherwise the helper first tries `garmin_agent/data/.garminconnect` and then `data/.garminconnect` before doing a password/MFA login.
 * **Permission error writing tokens:** set `GARMIN_TOKEN_STORE_DIR` to a writable folder.
 * **Want safest first test:** set `GARMIN_TOKEN_CACHE_MODE=readonly`.
 
