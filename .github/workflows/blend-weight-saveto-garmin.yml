@@ -24,6 +24,7 @@ jobs:
       GARMIN_EMAIL:    ${{ secrets.GARMIN_EMAIL }}
       GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
       GARMIN_MFA_CODE: ${{ secrets.GARMIN_MFA_CODE }}
+      GARMINTOKENS:    ${{ github.workspace }}/garmin_agent/data/.garminconnect
       WEIGHT_STD: '0.6'
       WEIGHT_ATH: '0.4'
       PYTHONPATH: ${{ github.workspace }}

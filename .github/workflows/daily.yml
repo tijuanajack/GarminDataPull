@@ -27,6 +27,7 @@ jobs:
       GARMIN_EMAIL:    ${{ secrets.GARMIN_EMAIL }}
       GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
       GARMIN_MFA_CODE: ${{ secrets.GARMIN_MFA_CODE }}
+      GARMINTOKENS:    ${{ github.workspace }}/garmin_agent/data/.garminconnect
 
     steps:
       - name: 📥 Checkout private repo
@@ -42,9 +43,7 @@ jobs:
       - name: Cache Garmin OAuth tokens
         uses: actions/cache@v4
         with:
-          path: |
-            garmin_agent/data/.garminconnect
-            data/.garminconnect
+          path: garmin_agent/data/.garminconnect
           key: garmin-oauth-${{ env.GARMIN_EMAIL }}
 
       - name: 📦 Install deps

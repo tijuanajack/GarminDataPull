@@ -82,30 +82,34 @@ This flow lets you test safely before touching `main`.
   Drive API.  After creating a service account, generate a JSON key
   and paste its contents into the `GOOGLE_SERVICE_ACCOUNT_JSON` secret.
 
-## Authentication/token controls (future-proofing)
+## Authentication/token controls
 
-All scripts now share a common auth helper (`auth.py`) so token behavior is consistent
-across exports and body-composition push flows.
+After reviewing the current upstream `python-garminconnect` project, this repo now follows
+the same basic auth pattern used there:
+
+1. Try a cached OAuth token store first.
+2. Fall back to a credential login only when cached tokens are missing/invalid.
+3. Persist refreshed tokens back to a single canonical token directory.
 
 Environment options:
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `GARMIN_TOKEN_CACHE_MODE` | `readwrite` | `readwrite` = use cached tokens + persist refreshed tokens, `readonly` = use cached tokens but never write, `off` = do not use token cache at all. |
-| `GARMIN_TOKEN_STORE_DIR` | `garmin_agent/data/.garminconnect` | Override where OAuth token files are read/written. By default the auth helper reads both `garmin_agent/data/.garminconnect` and the legacy repo-root `data/.garminconnect`, then writes refreshed tokens back to both paths for compatibility. |
-| `GARMIN_AUTH_MAX_ATTEMPTS` | `3` | How many times auth/token refresh should retry after Garmin returns HTTP 429 before giving up. |
-| `GARMIN_AUTH_RETRY_BASE_SECONDS` | `20` | Base delay for exponential backoff after HTTP 429 (`20`, `40`, `80`, ... seconds by default). |
+| `GARMINTOKENS` | `garmin_agent/data/.garminconnect` | Canonical token directory used by upstream `python-garminconnect` and by this repo's workflows/scripts. |
+| `GARMIN_TOKEN_STORE_DIR` | unset | Backward-compatible alias for `GARMINTOKENS` in this repository. |
 
-This lets you keep tokens out of git-managed paths, disable writes in locked environments,
-or bypass cached tokens entirely when debugging account auth issues.
+Compatibility note:
+
+* If neither env var is set, `auth.py` still checks the legacy repo-root `data/.garminconnect`
+  directory as a read-only fallback so older committed token stores can still be reused.
+* Fresh tokens are now written only to the canonical `GARMINTOKENS` location.
 
 ## Troubleshooting quick reference
 
 * **Auth/MFA failure:** set `GARMIN_MFA_CODE` and retry.
-* **HTTP 429 / Too Many Requests:** the auth helper now backs off and retries token/credential auth with exponential delays before failing; tune `GARMIN_AUTH_MAX_ATTEMPTS` and `GARMIN_AUTH_RETRY_BASE_SECONDS` if Garmin is throttling your runner.
-* **Token cache appears stale:** temporarily set `GARMIN_TOKEN_CACHE_MODE=off`; otherwise the helper first tries `garmin_agent/data/.garminconnect` and then `data/.garminconnect` before doing a password/MFA login.
-* **Permission error writing tokens:** set `GARMIN_TOKEN_STORE_DIR` to a writable folder.
-* **Want safest first test:** set `GARMIN_TOKEN_CACHE_MODE=readonly`.
+* **HTTP 429 / Too Many Requests:** Garmin is throttling authentication. The safest path is to reuse the cached token store in `GARMINTOKENS` and avoid repeated fresh logins until the throttle clears.
+* **Token cache appears stale:** delete or replace the token directory pointed to by `GARMINTOKENS` and let the next successful login regenerate it.
+* **Permission error writing tokens:** point `GARMINTOKENS` at a writable folder.
 
 ## Rollback (safe)
 

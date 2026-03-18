@@ -15,6 +15,7 @@ jobs:
       GARMIN_EMAIL:    ${{ secrets.GARMIN_EMAIL }}
       GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
       GARMIN_MFA_CODE: ${{ secrets.GARMIN_MFA_CODE }}
+      GARMINTOKENS:    ${{ github.workspace }}/garmin_agent/data/.garminconnect
       DAYS_ACTIVITIES: ${{ github.event.inputs.days }}
 
     steps:
@@ -22,6 +23,12 @@ jobs:
         uses: actions/checkout@v4
         with:
           persist-credentials: false
+
+      - name: Cache Garmin OAuth tokens
+        uses: actions/cache@v4
+        with:
+          path: garmin_agent/data/.garminconnect
+          key: garmin-oauth-${{ env.GARMIN_EMAIL }}
 
       - name: Setup Python
         uses: actions/setup-python@v5
