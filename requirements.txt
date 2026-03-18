@@ -1,3 +1,3 @@
-python-garminconnect
+garminconnect
 pandas
 python-dotenv
