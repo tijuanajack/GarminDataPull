@@ -21,6 +21,8 @@ on:
   workflow_dispatch:
 
 jobs:
+  concurrency:
+    group: garmin-sync    cancel-in-progress: false
   garmin:
     runs-on: ubuntu-latest
     env:
@@ -54,7 +56,12 @@ jobs:
           git config user.email "actions@github.com"
           git add garmin_agent/data/*.csv
           git commit -m "🔄 update summary $(date +'%Y-%m-%d')" || echo "no changes"
+
+          # 🔑 FIX: sync with remote before push
+          git pull --rebase https://x-access-token:${TOKEN}@github.com/${{ github.repository }}.git main
           git push https://x-access-token:${TOKEN}@github.com/${{ github.repository }}.git HEAD:main
+
+
       - name: 🚀 Push latest_summary.csv to public repo
         env:
           TOKEN: ${{ secrets.PUBLIC_REPO_PUSH_TOKEN }}
