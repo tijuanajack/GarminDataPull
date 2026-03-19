@@ -21,8 +21,6 @@ on:
   workflow_dispatch:
 
 jobs:
-  concurrency:
-    group: garmin-sync    cancel-in-progress: false
   garmin:
     runs-on: ubuntu-latest
     env:
