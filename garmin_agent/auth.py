@@ -42,14 +42,14 @@ def login(email: str, password: str, mfa: Optional[str] = None) -> Garmin:
     can_read_tokens = mode in {"readwrite", "readonly"}
     can_write_tokens = mode == "readwrite"
 
-    if can_read_tokens:
+       if can_read_tokens:
         try:
             g = Garmin()
             g.login(str(store))
             return g
-        except Exception:
-            # Fall back to credential login below.
-            pass
+        except Exception as exc:
+            if os.getenv("GITHUB_ACTIONS") == "true":
+                raise GarminAuthError(f"Token-based login failed: {exc}") from exc
 
     try:
         g = Garmin(email=email, password=password, is_cn=False, return_on_mfa=True)
