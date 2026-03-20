@@ -42,7 +42,7 @@ def login(email: str, password: str, mfa: Optional[str] = None) -> Garmin:
     can_read_tokens = mode in {"readwrite", "readonly"}
     can_write_tokens = mode == "readwrite"
 
-       if can_read_tokens:
+    if can_read_tokens:
         try:
             g = Garmin()
             g.login(str(store))
