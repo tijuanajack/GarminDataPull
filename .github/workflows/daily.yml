@@ -46,7 +46,10 @@ jobs:
       - name: Debug token files
         run: |
           ls -la garmin_agent/data/.garminconnect
-          
+      - name: Debug token sizes
+        run: |
+          wc -c garmin_agent/data/.garminconnect/oauth1_token.json
+          wc -c garmin_agent/data/.garminconnect/oauth2_token.json    
       - name: 🐍 Setup Python
         uses: actions/setup-python@v5
         with:
