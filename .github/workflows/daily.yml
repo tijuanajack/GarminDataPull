@@ -24,16 +24,29 @@ jobs:
   garmin:
     runs-on: ubuntu-latest
     #env:
-      #GARMIN_EMAIL:    ${{ secrets.GARMIN_EMAIL }}
-      #GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
-      #GARMIN_MFA_CODE: ${{ secrets.GARMIN_MFA_CODE }}
+      GARMIN_EMAIL:    ${{ secrets.GARMIN_EMAIL }}
+      GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
+      GARMIN_MFA_CODE: ${{ secrets.GARMIN_MFA_CODE }}
+      GARMIN_TOKEN_CACHE_MODE: readonly
 
     steps:
       - name: 📥 Checkout private repo
         uses: actions/checkout@v4
         with:
           persist-credentials: false
-
+      - name: Restore Garmin OAuth tokens
+        run: |
+          mkdir -p garmin_agent/data/.garminconnect
+          cat <<'EOF' > garmin_agent/data/.garminconnect/oauth1_token.json
+          ${{ secrets.GARMIN_OAUTH1_TOKEN }}
+          EOF
+          cat <<'EOF' > garmin_agent/data/.garminconnect/oauth2_token.json
+          ${{ secrets.GARMIN_OAUTH2_TOKEN }}
+          EOF
+      - name: Debug token files
+        run: |
+          ls -la garmin_agent/data/.garminconnect
+          
       - name: 🐍 Setup Python
         uses: actions/setup-python@v5
         with:
