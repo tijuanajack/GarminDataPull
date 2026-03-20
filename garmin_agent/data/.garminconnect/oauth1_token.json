@@ -1,7 +1,7 @@
 {
     "oauth_token": "ee2d458c-5a5f-4800-8dd6-5058ea36c896",
     "oauth_token_secret": "9km4IW2CScZK76hozRDUftmgwaJRVSF344T",
-    "mfa_token": "MFA-20811-9uzlqusCLrwKeA5ViuQELyeY45ZWi30OK521PQ31mMscaGDJ7K-cas",
-    "mfa_expiration_timestamp": "2027-03-18T19:29:47",
+    "mfa_token": "MFA-15570-hUgXe7luWkHWQZBbB0C0tslVzTfv1yVKDL2iu05aqqhndSEkHh-cas",
+    "mfa_expiration_timestamp": "2027-03-20T13:00:53",
     "domain": "garmin.com"
 }
