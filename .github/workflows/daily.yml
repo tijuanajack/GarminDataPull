@@ -23,7 +23,7 @@ on:
 jobs:
   garmin:
     runs-on: ubuntu-latest
-    #env:
+    env:
       GARMIN_EMAIL:    ${{ secrets.GARMIN_EMAIL }}
       GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
       GARMIN_MFA_CODE: ${{ secrets.GARMIN_MFA_CODE }}
