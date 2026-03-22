@@ -31,6 +31,26 @@ jobs:
         run: |
           python -m pip install --quiet --upgrade pip
           pip install --quiet garminconnect pandas
+      - name: 📥 Checkout private repo
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Restore Garmin OAuth tokens
+        run: |
+          mkdir -p garmin_agent/data/.garminconnect
+          cat <<'EOF' > garmin_agent/data/.garminconnect/oauth1_token.json
+          ${{ secrets.GARMIN_OAUTH1_TOKEN }}
+          EOF
+          cat <<'EOF' > garmin_agent/data/.garminconnect/oauth2_token.json
+          ${{ secrets.GARMIN_OAUTH2_TOKEN }}
+          EOF
+      - name: Debug token files
+        run: |
+          ls -la garmin_agent/data/.garminconnect
+      - name: Debug token sizes
+        run: |
+          wc -c garmin_agent/data/.garminconnect/oauth1_token.json
+          wc -c garmin_agent/data/.garminconnect/oauth2_token.json    
 
       - name: Run activity export (last 30 days)
         run: python garmin_agent/activity_export.py
