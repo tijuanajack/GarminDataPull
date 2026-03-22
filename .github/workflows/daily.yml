@@ -60,7 +60,7 @@ jobs:
           git commit -m "🔄 update summary $(date +'%Y-%m-%d')" || echo "no changes"
 
           # 🔑 FIX: sync with remote before push
-          git pull --rebase https://x-access-token:${TOKEN}@github.com/${{ github.repository }}.git main
+          # git pull --rebase https://x-access-token:${TOKEN}@github.com/${{ github.repository }}.git main
           git push https://x-access-token:${TOKEN}@github.com/${{ github.repository }}.git HEAD:main
 
 
