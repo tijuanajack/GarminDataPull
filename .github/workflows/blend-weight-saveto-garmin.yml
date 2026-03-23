@@ -29,16 +29,26 @@ jobs:
       PYTHONPATH: ${{ github.workspace }}
 
     steps:
-      - name: Checkout
+      - name: 📥 Checkout private repo
         uses: actions/checkout@v4
         with:
           persist-credentials: false
-
-      - name: Cache Garmin OAuth tokens
-        uses: actions/cache@v4
-        with:
-          path: garmin_agent/data/.garminconnect
-          key: garmin-oauth-${{ env.GARMIN_EMAIL }}
+      - name: Restore Garmin OAuth tokens
+        run: |
+          mkdir -p garmin_agent/data/.garminconnect
+          cat <<'EOF' > garmin_agent/data/.garminconnect/oauth1_token.json
+          ${{ secrets.GARMIN_OAUTH1_TOKEN }}
+          EOF
+          cat <<'EOF' > garmin_agent/data/.garminconnect/oauth2_token.json
+          ${{ secrets.GARMIN_OAUTH2_TOKEN }}
+          EOF
+      - name: Debug token files
+        run: |
+          ls -la garmin_agent/data/.garminconnect
+      - name: Debug token sizes
+        run: |
+          wc -c garmin_agent/data/.garminconnect/oauth1_token.json
+          wc -c garmin_agent/data/.garminconnect/oauth2_token.json    
 
       - name: Setup Python
         uses: actions/setup-python@v5
