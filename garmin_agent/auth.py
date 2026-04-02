@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Optional
+import contextlib
+import inspect
 import os
 
 from garminconnect import Garmin
@@ -29,6 +31,42 @@ def _token_cache_mode() -> str:
     return mode if mode in {"readwrite", "readonly", "off"} else "readwrite"
 
 
+def _supports_parameter(callable_obj, name: str) -> bool:
+    try:
+        return name in inspect.signature(callable_obj).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def _new_garmin_with_credentials(email: str, password: str, mfa: Optional[str]) -> Garmin:
+    kwargs = {"email": email, "password": password}
+
+    # Legacy parameter (still supported by older releases).
+    if _supports_parameter(Garmin.__init__, "is_cn"):
+        kwargs["is_cn"] = False
+
+    # New API prefers prompt_mfa callback.
+    if _supports_parameter(Garmin.__init__, "prompt_mfa"):
+        if mfa:
+            kwargs["prompt_mfa"] = lambda: mfa
+    # Legacy MFA flow.
+    elif _supports_parameter(Garmin.__init__, "return_on_mfa"):
+        kwargs["return_on_mfa"] = True
+
+    return Garmin(**kwargs)
+
+
+def _call_login(g: Garmin, store: Path | None):
+    """Call Garmin.login in a way that supports old and new library versions."""
+    if store is None:
+        return g.login()
+    try:
+        return g.login(str(store))
+    except TypeError:
+        # Older versions expect no args and require explicit token dump.
+        return g.login()
+
+
 def login(email: str, password: str, mfa: Optional[str] = None) -> Garmin:
     """Authenticate with Garmin using token cache + credential fallback.
 
@@ -36,6 +74,8 @@ def login(email: str, password: str, mfa: Optional[str] = None) -> Garmin:
       - readwrite: try token login; on credential login success, persist tokens.
       - readonly: try token login; credential login allowed but tokens not persisted.
       - off: skip token login and never write token files.
+
+    Supports both old garth-based auth and the newer mobile-SSO flow.
     """
     mode = _token_cache_mode()
     store = _token_store_dir()
@@ -45,23 +85,32 @@ def login(email: str, password: str, mfa: Optional[str] = None) -> Garmin:
     if can_read_tokens:
         try:
             g = Garmin()
-            g.login(str(store))
+            _call_login(g, store)
             return g
         except Exception as exc:
             if os.getenv("GITHUB_ACTIONS") == "true":
                 raise GarminAuthError(f"Token-based login failed: {exc}") from exc
 
     try:
-        g = Garmin(email=email, password=password, is_cn=False, return_on_mfa=True)
-        state, session = g.login()
-        if state == "needs_mfa":
-            if not mfa:
-                raise GarminAuthError("MFA required but GARMIN_MFA_CODE was not provided")
-            g.resume_login(session, mfa)
+        g = _new_garmin_with_credentials(email, password, mfa)
 
-        if can_write_tokens:
+        login_result = _call_login(g, store if can_write_tokens else None)
+
+        # Legacy MFA handshake path.
+        if isinstance(login_result, tuple) and len(login_result) == 2:
+            state, session = login_result
+            if state == "needs_mfa":
+                if not mfa:
+                    raise GarminAuthError("MFA required but GARMIN_MFA_CODE was not provided")
+                if not hasattr(g, "resume_login"):
+                    raise GarminAuthError("MFA required but library does not support resume_login")
+                g.resume_login(session, mfa)
+
+        # Legacy token persistence when login(path) is not supported.
+        if can_write_tokens and hasattr(g, "garth"):
             store.mkdir(parents=True, exist_ok=True)
-            g.garth.dump(str(store))
+            with contextlib.suppress(Exception):
+                g.garth.dump(str(store))
         return g
     except Exception as exc:
         raise GarminAuthError(f"Garmin authentication failed: {exc}") from exc
