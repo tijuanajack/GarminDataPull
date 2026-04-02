@@ -50,11 +50,9 @@ jobs:
           python -m pip install --quiet --upgrade pip
           pip install --quiet -r requirements.txt
 
-      - name: Run Garmin agent
-        run: python garmin_agent/garmin_to_drive.py
-
       - name: Blend body metrics
         run: python garmin_agent/blend_for_garmin.py
 
       - name: Push blended body metrics
+        if: github.event_name != 'pull_request'
         run: python garmin_agent/push_blended_using_agent_login.py
