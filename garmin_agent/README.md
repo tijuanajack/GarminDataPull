@@ -85,7 +85,8 @@ This flow lets you test safely before touching `main`.
 ## Authentication/token controls (future-proofing)
 
 All scripts now share a common auth helper (`auth.py`) so token behavior is consistent
-across exports and body-composition push flows.
+across exports and body-composition push flows, including compatibility with both
+legacy and the latest `python-garminconnect` authentication flows.
 
 Environment options:
 
@@ -100,8 +101,8 @@ or bypass cached tokens entirely when debugging account auth issues.
 ## Troubleshooting quick reference
 
 * **Auth/MFA failure:** set `GARMIN_MFA_CODE` and retry.
-* **Token cache appears stale:** temporarily set `GARMIN_TOKEN_CACHE_MODE=off`.
-* **Permission error writing tokens:** set `GARMIN_TOKEN_STORE_DIR` to a writable folder.
+* **Token cache appears stale:** temporarily set `GARMIN_TOKEN_CACHE_MODE=off` and clear old token files in the token store (older versions used `oauth*_token.json`; newer versions use `garmin_tokens.json`).
+* **Permission error writing tokens:** set `GARMIN_TOKEN_STORE_DIR` to a writable folder. Ensure `curl_cffi` is installed for newer auth flows.
 * **Want safest first test:** set `GARMIN_TOKEN_CACHE_MODE=readonly`.
 
 ## Rollback (safe)
