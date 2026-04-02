@@ -7,10 +7,18 @@ import inspect
 import os
 
 from garminconnect import Garmin
+from dotenv import load_dotenv
 
 
 class GarminAuthError(RuntimeError):
     """Raised when authentication cannot be completed."""
+
+
+def load_local_env() -> None:
+    """Load optional local .env files for non-CI runs."""
+    script_dir = Path(__file__).parent
+    load_dotenv(script_dir / ".env")
+    load_dotenv(script_dir.parent / ".env")
 
 
 def _token_store_dir() -> Path:
@@ -67,7 +75,7 @@ def _call_login(g: Garmin, store: Path | None):
         return g.login()
 
 
-def login(email: str, password: str, mfa: Optional[str] = None) -> Garmin:
+def login(email: Optional[str] = None, password: Optional[str] = None, mfa: Optional[str] = None) -> Garmin:
     """Authenticate with Garmin using token cache + credential fallback.
 
     Modes:
@@ -90,6 +98,12 @@ def login(email: str, password: str, mfa: Optional[str] = None) -> Garmin:
         except Exception as exc:
             if os.getenv("GITHUB_ACTIONS") == "true":
                 raise GarminAuthError(f"Token-based login failed: {exc}") from exc
+
+    if not email or not password:
+        raise GarminAuthError(
+            "Token-based login failed and no GARMIN_EMAIL/GARMIN_PASSWORD were provided "
+            "for credential fallback. Set them in your shell or in GarminDataPull/.env."
+        )
 
     try:
         g = _new_garmin_with_credentials(email, password, mfa)
@@ -114,3 +128,16 @@ def login(email: str, password: str, mfa: Optional[str] = None) -> Garmin:
         return g
     except Exception as exc:
         raise GarminAuthError(f"Garmin authentication failed: {exc}") from exc
+
+
+def main() -> None:
+    load_local_env()
+    email = os.getenv("GARMIN_EMAIL")
+    password = os.getenv("GARMIN_PASSWORD")
+    mfa = os.getenv("GARMIN_MFA_CODE")
+    login(email, password, mfa)
+    print(f"Authenticated with Garmin. Token store: {_token_store_dir()}")
+
+
+if __name__ == "__main__":
+    main()

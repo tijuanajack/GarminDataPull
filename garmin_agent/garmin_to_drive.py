@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 import os
 
 import pandas as pd
+from dotenv import load_dotenv
 
 from auth import login
 
@@ -15,17 +16,16 @@ def safe(obj, *keys):
         cur = as_dict(cur).get(k, {})
     return cur or None
 
-
-def require_env(name: str) -> str:
-    value = os.getenv(name)
-    if not value:
-        raise RuntimeError(f"Missing required environment variable: {name}")
-    return value
+def load_local_env() -> None:
+    script_dir = Path(__file__).parent
+    load_dotenv(script_dir / ".env")
+    load_dotenv(script_dir.parent / ".env")
 
 # ---------- main ----------
 def main():
-    email = require_env("GARMIN_EMAIL")
-    pwd   = require_env("GARMIN_PASSWORD")
+    load_local_env()
+    email = os.getenv("GARMIN_EMAIL")
+    pwd   = os.getenv("GARMIN_PASSWORD")
     mfa   = os.getenv("GARMIN_MFA_CODE")
     g     = login(email, pwd, mfa)
 
