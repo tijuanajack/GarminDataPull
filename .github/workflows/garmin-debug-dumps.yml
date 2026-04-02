@@ -16,6 +16,7 @@ jobs:
       GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
       GARMIN_MFA_CODE: ${{ secrets.GARMIN_MFA_CODE }}
       GARMIN_TOKEN_CACHE_MODE: readonly
+      GARMIN_TOKEN_STORE_DIR: ${{ runner.temp }}/.garminconnect
       DAYS_ACTIVITIES: ${{ github.event.inputs.days }}
 
     steps:

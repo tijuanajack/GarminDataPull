@@ -14,6 +14,7 @@ jobs:
       GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
       GARMIN_MFA_CODE: ${{ secrets.GARMIN_MFA_CODE }}
       GARMIN_TOKEN_CACHE_MODE: readonly
+      GARMIN_TOKEN_STORE_DIR: ${{ runner.temp }}/.garminconnect
       DAYS_ACTIVITIES: "30"
 
     steps:
@@ -24,22 +25,10 @@ jobs:
 
       - name: Restore Garmin OAuth tokens
         run: |
-          mkdir -p garmin_agent/data/.garminconnect
-          if [ -n "${{ secrets.GARMIN_TOKENS_JSON }}" ]; then
-            cat <<'EOF' > garmin_agent/data/.garminconnect/garmin_tokens.json
+          mkdir -p "${GARMIN_TOKEN_STORE_DIR}"
+          cat <<'EOF' > "${GARMIN_TOKEN_STORE_DIR}/garmin_tokens.json"
           ${{ secrets.GARMIN_TOKENS_JSON }}
           EOF
-          fi
-          if [ -n "${{ secrets.GARMIN_OAUTH1_TOKEN }}" ]; then
-          cat <<'EOF' > garmin_agent/data/.garminconnect/oauth1_token.json
-          ${{ secrets.GARMIN_OAUTH1_TOKEN }}
-          EOF
-          fi
-          if [ -n "${{ secrets.GARMIN_OAUTH2_TOKEN }}" ]; then
-          cat <<'EOF' > garmin_agent/data/.garminconnect/oauth2_token.json
-          ${{ secrets.GARMIN_OAUTH2_TOKEN }}
-          EOF
-          fi
 
       - name: Setup Python
         uses: actions/setup-python@v5
