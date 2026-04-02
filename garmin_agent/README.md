@@ -73,7 +73,7 @@ This flow lets you test safely before touching `main`.
 
 ## Notes
 
-* This automation uses the unofficial [`python-garminconnect`](https://github.com/cyberjunky/python-garminconnect)
+* This automation uses the unofficial [`garminconnect`](https://github.com/cyberjunky/python-garminconnect)
   library.  Garmin may change their APIs at any time; if a call fails
   the script will log the error but continue pulling other data.
 * The Google Drive upload uses a service account.  See the official

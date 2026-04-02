@@ -52,16 +52,17 @@ def login(email: str, password: str, mfa: Optional[str] = None) -> Garmin:
                 raise GarminAuthError(f"Token-based login failed: {exc}") from exc
 
     try:
-        g = Garmin(email=email, password=password, is_cn=False, return_on_mfa=True)
-        state, session = g.login()
-        if state == "needs_mfa":
+        def prompt_mfa() -> str:
             if not mfa:
                 raise GarminAuthError("MFA required but GARMIN_MFA_CODE was not provided")
-            g.resume_login(session, mfa)
+            return mfa
 
+        g = Garmin(email=email, password=password, prompt_mfa=prompt_mfa)
         if can_write_tokens:
             store.mkdir(parents=True, exist_ok=True)
-            g.garth.dump(str(store))
+            g.login(str(store))
+        else:
+            g.login()
         return g
     except Exception as exc:
         raise GarminAuthError(f"Garmin authentication failed: {exc}") from exc
