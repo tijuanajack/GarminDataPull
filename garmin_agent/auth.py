@@ -108,6 +108,23 @@ def _prime_tokenstore_path(g: Garmin, store: Path | None) -> None:
         client._tokenstore_path = str(store)
 
 
+def _persist_tokens(g: Garmin, store: Path | None) -> None:
+    """Persist tokens for both modern and legacy auth clients."""
+    if store is None:
+        return
+
+    store.parent.mkdir(parents=True, exist_ok=True)
+
+    client = getattr(g, "client", None)
+    if client is not None and hasattr(client, "dump"):
+        with contextlib.suppress(Exception):
+            client.dump(str(store))
+
+    if hasattr(g, "garth"):
+        with contextlib.suppress(Exception):
+            g.garth.dump(str(store.parent))
+
+
 def login(email: Optional[str] = None, password: Optional[str] = None, mfa: Optional[str] = None) -> Garmin:
     """Authenticate with Garmin using token cache + credential fallback.
 
@@ -154,11 +171,8 @@ def login(email: Optional[str] = None, password: Optional[str] = None, mfa: Opti
                     raise GarminAuthError("MFA required but library does not support resume_login")
                 g.resume_login(session, mfa)
 
-        # Legacy token persistence when login(path) is not supported.
-        if can_write_tokens and hasattr(g, "garth"):
-            store.parent.mkdir(parents=True, exist_ok=True)
-            with contextlib.suppress(Exception):
-                g.garth.dump(str(store.parent))
+        if can_write_tokens:
+            _persist_tokens(g, store)
         return g
     except Exception as exc:
         raise GarminAuthError(f"Garmin authentication failed: {exc}") from exc
