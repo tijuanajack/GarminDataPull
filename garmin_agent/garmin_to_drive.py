@@ -15,10 +15,17 @@ def safe(obj, *keys):
         cur = as_dict(cur).get(k, {})
     return cur or None
 
+
+def require_env(name: str) -> str:
+    value = os.getenv(name)
+    if not value:
+        raise RuntimeError(f"Missing required environment variable: {name}")
+    return value
+
 # ---------- main ----------
 def main():
-    email = os.environ["GARMIN_EMAIL"]
-    pwd   = os.environ["GARMIN_PASSWORD"]
+    email = require_env("GARMIN_EMAIL")
+    pwd   = require_env("GARMIN_PASSWORD")
     mfa   = os.getenv("GARMIN_MFA_CODE")
     g     = login(email, pwd, mfa)
 
