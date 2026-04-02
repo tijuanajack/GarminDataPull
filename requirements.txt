@@ -1,3 +1,4 @@
 python-garminconnect
+curl_cffi
 pandas
 python-dotenv

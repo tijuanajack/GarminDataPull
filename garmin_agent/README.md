@@ -55,6 +55,53 @@ free.
    occur at the next scheduled time, or you can trigger it manually
    from the *Actions* tab.
 
+
+## VS Code first-run walkthrough (new Garmin auth)
+
+Because `python-garminconnect` now uses Garmin's **mobile SSO flow**, it is best to run
+this project locally one time first so a valid token file is created.
+
+1. Open this folder in **Visual Studio Code**.
+2. Open **Terminal → New Terminal** in VS Code.
+3. Create a virtual environment:
+   ```bash
+   python3 -m venv .venv
+   ```
+4. Activate it:
+   - macOS/Linux:
+     ```bash
+     source .venv/bin/activate
+     ```
+   - Windows PowerShell:
+     ```powershell
+     .venv\Scripts\Activate.ps1
+     ```
+5. Install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
+6. Set env vars in the terminal session (replace with your values):
+   - macOS/Linux:
+     ```bash
+     export GARMIN_EMAIL="you@example.com"
+     export GARMIN_PASSWORD="your-password"
+     export GARMIN_MFA_CODE="123456"   # only if your account asks for MFA
+     ```
+   - Windows PowerShell:
+     ```powershell
+     $env:GARMIN_EMAIL="you@example.com"
+     $env:GARMIN_PASSWORD="your-password"
+     $env:GARMIN_MFA_CODE="123456"   # only if your account asks for MFA
+     ```
+7. Run the script once locally:
+   ```bash
+   python garmin_to_drive.py
+   ```
+8. Confirm token file creation in `data/.garminconnect/garmin_tokens.json`.
+
+After this first local run, the workflow can reuse and auto-refresh tokens (depending on
+`GARMIN_TOKEN_CACHE_MODE`).
+
 ## First-time operator checklist (no Bash required)
 
 If you are brand new to Git/GitHub, this is the safest test-first path.
@@ -92,7 +139,8 @@ Environment options:
 | Variable | Default | Purpose |
 |---|---|---|
 | `GARMIN_TOKEN_CACHE_MODE` | `readwrite` | `readwrite` = use cached tokens + persist refreshed tokens, `readonly` = use cached tokens but never write, `off` = do not use token cache at all. |
-| `GARMIN_TOKEN_STORE_DIR` | `garmin_agent/data/.garminconnect` | Override where OAuth token files are read/written. Useful for CI secrets mounts or external persistent storage. |
+| `GARMIN_TOKEN_STORE_DIR` | `garmin_agent/data/.garminconnect` | Override where OAuth token files are read/written (`garmin_tokens.json` lives inside this folder). Useful for CI secrets mounts or external persistent storage. |
+| `GARMINTOKENS` | *(unset)* | Upstream-compatible alias for token folder location used by `python-garminconnect`. |
 
 This lets you keep tokens out of git-managed paths, disable writes in locked environments,
 or bypass cached tokens entirely when debugging account auth issues.
@@ -100,7 +148,7 @@ or bypass cached tokens entirely when debugging account auth issues.
 ## Troubleshooting quick reference
 
 * **Auth/MFA failure:** set `GARMIN_MFA_CODE` and retry.
-* **Token cache appears stale:** temporarily set `GARMIN_TOKEN_CACHE_MODE=off`.
+* **Token cache appears stale:** temporarily set `GARMIN_TOKEN_CACHE_MODE=off` and re-run local login.
 * **Permission error writing tokens:** set `GARMIN_TOKEN_STORE_DIR` to a writable folder.
 * **Want safest first test:** set `GARMIN_TOKEN_CACHE_MODE=readonly`.
 
