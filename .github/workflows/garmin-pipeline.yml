@@ -1,19 +1,19 @@
 name: Daily Garmin Activities Export
 
 on:
- # schedule:
-    # Run once daily at 7 AM Central
-#  - cron: '0 13 * * *'   # 07:00 CDT
-#  - cron: '0 14 * * *'   # 07:00 CST
+  # schedule:
+  #   - cron: "0 13 * * *"   # 07:00 CDT
+  #   - cron: "0 14 * * *"   # 07:00 CST
   workflow_dispatch:
 
 jobs:
   activities:
     runs-on: ubuntu-latest
     env:
-      GARMIN_EMAIL:    ${{ secrets.GARMIN_EMAIL }}
+      GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
       GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
       GARMIN_MFA_CODE: ${{ secrets.GARMIN_MFA_CODE }}
+      GARMIN_TOKEN_CACHE_MODE: readonly
       DAYS_ACTIVITIES: "30"
 
     steps:
@@ -22,19 +22,6 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-
-      - name: Install deps
-        run: |
-          python -m pip install --quiet --upgrade pip
-          pip install --quiet garminconnect pandas
-      - name: 📥 Checkout private repo
-        uses: actions/checkout@v4
-        with:
-          persist-credentials: false
       - name: Restore Garmin OAuth tokens
         run: |
           mkdir -p garmin_agent/data/.garminconnect
@@ -44,25 +31,31 @@ jobs:
           cat <<'EOF' > garmin_agent/data/.garminconnect/oauth2_token.json
           ${{ secrets.GARMIN_OAUTH2_TOKEN }}
           EOF
-      - name: Debug token files
-        run: |
-          ls -la garmin_agent/data/.garminconnect
-      - name: Debug token sizes
-        run: |
-          wc -c garmin_agent/data/.garminconnect/oauth1_token.json
-          wc -c garmin_agent/data/.garminconnect/oauth2_token.json    
 
-      - name: Run activity export (last 30 days)
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --quiet --upgrade pip
+          pip install --quiet -r requirements.txt
+
+      - name: Run activity export
         run: python garmin_agent/activity_export.py
 
       - name: Commit activity CSV to private repo
         env:
           TOKEN: ${{ secrets.PRIVATE_REPO_PUSH_TOKEN }}
         run: |
-          git config user.name  "github-actions"
+          git config user.name "github-actions"
           git config user.email "actions@github.com"
           git add garmin_agent/data/latest_activity_summary.csv
-          git commit -m "update activities $(date +'%Y-%m-%d')" || echo "no changes"
+          git diff --cached --quiet && exit 0
+          git commit -m "update activities $(date +'%Y-%m-%d')"
+          git fetch https://x-access-token:${TOKEN}@github.com/${{ github.repository }}.git main
+          git rebase FETCH_HEAD
           git push https://x-access-token:${TOKEN}@github.com/${{ github.repository }}.git HEAD:main
 
       - name: Push latest_activity_summary.csv to public repo
@@ -72,8 +65,9 @@ jobs:
           git clone https://x-access-token:${TOKEN}@github.com/tijuanajack/garmin-health-data.git public
           cp garmin_agent/data/latest_activity_summary.csv public/
           cd public
-          git config user.name  "github-actions"
+          git config user.name "github-actions"
           git config user.email "actions@github.com"
           git add latest_activity_summary.csv
-          git commit -m "activities update $(date +'%Y-%m-%d')" || echo "no changes"
+          git diff --cached --quiet && exit 0
+          git commit -m "activities update $(date +'%Y-%m-%d')"
           git push

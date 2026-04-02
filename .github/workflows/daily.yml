@@ -1,27 +1,26 @@
 name: Daily Garmin Sync
 
 on:
-  #schedule:
-    # 7 AM Central
-    # - cron: '0 12 * * *'   # 08:00 CDT  (Mar–Nov)
-    # - cron: '0 13 * * *'   # 08:00 CST  (Nov–Mar)
-
+  # schedule:
+  #   - cron: "0 12 * * *"   # 08:00 CDT (Mar-Nov)
+  #   - cron: "0 13 * * *"   # 08:00 CST (Nov-Mar)
   workflow_dispatch:
 
 jobs:
   garmin:
     runs-on: ubuntu-latest
     env:
-      GARMIN_EMAIL:    ${{ secrets.GARMIN_EMAIL }}
+      GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
       GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
       GARMIN_MFA_CODE: ${{ secrets.GARMIN_MFA_CODE }}
       GARMIN_TOKEN_CACHE_MODE: readonly
 
     steps:
-      - name: 📥 Checkout private repo
+      - name: Checkout repo
         uses: actions/checkout@v4
         with:
           persist-credentials: false
+
       - name: Restore Garmin OAuth tokens
         run: |
           mkdir -p garmin_agent/data/.garminconnect
@@ -31,80 +30,43 @@ jobs:
           cat <<'EOF' > garmin_agent/data/.garminconnect/oauth2_token.json
           ${{ secrets.GARMIN_OAUTH2_TOKEN }}
           EOF
-      - name: Debug token files
-        run: |
-          ls -la garmin_agent/data/.garminconnect
-      - name: Debug token sizes
-        run: |
-          wc -c garmin_agent/data/.garminconnect/oauth1_token.json
-          wc -c garmin_agent/data/.garminconnect/oauth2_token.json    
-      - name: 🐍 Setup Python
+
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: "3.10"
 
-      - name: 📦 Install deps
+      - name: Install dependencies
         run: |
           python -m pip install --quiet --upgrade pip
-          pip install --quiet garminconnect pandas openai>=1.12.0
-      - name: ▶️ Run Garmin agent
+          pip install --quiet -r requirements.txt
+
+      - name: Run Garmin agent
         run: python garmin_agent/garmin_to_drive.py
 
-      - name: 📝 Commit CSVs to private repo
+      - name: Commit CSVs to private repo
         env:
           TOKEN: ${{ secrets.PRIVATE_REPO_PUSH_TOKEN }}
         run: |
-          git config user.name  "github-actions"
+          git config user.name "github-actions"
           git config user.email "actions@github.com"
           git add garmin_agent/data/*.csv
-          git commit -m "🔄 update summary $(date +'%Y-%m-%d')" || echo "no changes"
-
-          # 🔑 FIX: sync with remote before push
-          # git pull --rebase https://x-access-token:${TOKEN}@github.com/${{ github.repository }}.git main
+          git diff --cached --quiet && exit 0
+          git commit -m "update summary $(date +'%Y-%m-%d')"
+          git fetch https://x-access-token:${TOKEN}@github.com/${{ github.repository }}.git main
+          git rebase FETCH_HEAD
           git push https://x-access-token:${TOKEN}@github.com/${{ github.repository }}.git HEAD:main
 
-
-      - name: 🚀 Push latest_summary.csv to public repo
+      - name: Push latest_summary.csv to public repo
         env:
           TOKEN: ${{ secrets.PUBLIC_REPO_PUSH_TOKEN }}
         run: |
           git clone https://x-access-token:${TOKEN}@github.com/tijuanajack/garmin-health-data.git public
           cp garmin_agent/data/latest_summary.csv public/
           cd public
-          git config user.name  "github-actions"
+          git config user.name "github-actions"
           git config user.email "actions@github.com"
           git add latest_summary.csv
-          git commit -m "📊 update $(date +'%Y-%m-%d')" || echo "no changes"
+          git diff --cached --quiet && exit 0
+          git commit -m "update $(date +'%Y-%m-%d')"
           git push
-#      - name: 🤖 Send CSV to OpenAI Assistant
-#        env:
-#          OPENAI_KEY:       ${{ secrets.OPENAI_KEY }}
-#          ASSISTANT_ID:     ${{ secrets.OPENAI_ASSISTANT_ID }}
-#          THREAD_ID:        ${{ secrets.OPENAI_THREAD_ID }}
-#        run: |
-#          python <<'PY'
-#          import os, openai, pathlib
-#          client = openai.OpenAI(api_key=os.environ["OPENAI_KEY"])
-#
-#          csv_path = pathlib.Path("garmin_agent/data/latest_summary.csv")
-#          up = client.files.create(purpose="assistants", file=open(csv_path, "rb"))
-#
-#          client.beta.threads.messages.create(
-#          thread_id=os.environ["THREAD_ID"],
-#          role="user",
-#          content=f"Garmin summary for {csv_path.name}",
-#          attachments=[
-#          {
-#            "file_id": up.id,
-#            "tools": [{"type": "code_interpreter"}]
-#          }
-#              ]
-#          )
-#
-#          run = client.beta.threads.runs.create(
-#          thread_id=os.environ["THREAD_ID"],
-#          assistant_id=os.environ["ASSISTANT_ID"]
-#          )
-#          print("✅ Uploaded and started run:", run.id)
-#
-#          PY

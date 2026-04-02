@@ -12,13 +12,14 @@ jobs:
   dumps:
     runs-on: ubuntu-latest
     env:
-      GARMIN_EMAIL:    ${{ secrets.GARMIN_EMAIL }}
+      GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
       GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
       GARMIN_MFA_CODE: ${{ secrets.GARMIN_MFA_CODE }}
+      GARMIN_TOKEN_CACHE_MODE: readonly
       DAYS_ACTIVITIES: ${{ github.event.inputs.days }}
 
     steps:
-      - name: Checkout
+      - name: Checkout repo
         uses: actions/checkout@v4
         with:
           persist-credentials: false
@@ -28,16 +29,14 @@ jobs:
         with:
           python-version: "3.10"
 
-      - name: Install deps
+      - name: Install dependencies
         run: |
           python -m pip install --quiet --upgrade pip
-          pip install --quiet garminconnect pandas
+          pip install --quiet -r requirements.txt
 
       - name: Run raw activities dump
-        run: |
-          python garmin_agent/dump_raw_activities.py
+        run: python garmin_agent/dump_raw_activities.py
 
-      # Upload dumps as artifacts so you can download them from the Actions run
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -46,14 +45,16 @@ jobs:
             garmin_agent/data/activities_list.json
             garmin_agent/data/activities_details.json
 
-      # Optional: commit dumps to the repo (private)
       - name: Commit dumps to repo
         if: ${{ always() }}
         env:
           TOKEN: ${{ secrets.PRIVATE_REPO_PUSH_TOKEN }}
         run: |
-          git config user.name  "github-actions"
+          git config user.name "github-actions"
           git config user.email "actions@github.com"
-          git add garmin_agent/data/activities_list.json garmin_agent/data/activities_details.jsonl
-          git commit -m "debug dumps $(date +'%Y-%m-%dT%H:%M:%S')" || echo "no changes"
+          git add garmin_agent/data/activities_list.json garmin_agent/data/activities_details.json
+          git diff --cached --quiet && exit 0
+          git commit -m "debug dumps $(date +'%Y-%m-%dT%H:%M:%S')"
+          git fetch https://x-access-token:${TOKEN}@github.com/${{ github.repository }}.git main
+          git rebase FETCH_HEAD
           git push https://x-access-token:${TOKEN}@github.com/${{ github.repository }}.git HEAD:main
