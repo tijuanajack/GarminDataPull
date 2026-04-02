@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 import contextlib
 import inspect
 import os
@@ -46,8 +46,27 @@ def _supports_parameter(callable_obj, name: str) -> bool:
         return False
 
 
+def _resolve_mfa_prompt(mfa: Optional[str]) -> Optional[Callable[[], str]]:
+    if mfa:
+        code = mfa.strip()
+        if code:
+            return lambda: code
+
+    if os.getenv("GITHUB_ACTIONS") == "true":
+        return None
+
+    if os.getenv("GARMIN_INTERACTIVE_MFA", "true").strip().lower() in {"0", "false", "no", "off"}:
+        return None
+
+    def prompt() -> str:
+        return input("Enter Garmin MFA code: ").strip()
+
+    return prompt
+
+
 def _new_garmin_with_credentials(email: str, password: str, mfa: Optional[str]) -> Garmin:
     kwargs = {"email": email, "password": password}
+    prompt_mfa = _resolve_mfa_prompt(mfa)
 
     # Legacy parameter (still supported by older releases).
     if _supports_parameter(Garmin.__init__, "is_cn"):
@@ -55,8 +74,8 @@ def _new_garmin_with_credentials(email: str, password: str, mfa: Optional[str]) 
 
     # New API prefers prompt_mfa callback.
     if _supports_parameter(Garmin.__init__, "prompt_mfa"):
-        if mfa:
-            kwargs["prompt_mfa"] = lambda: mfa
+        if prompt_mfa:
+            kwargs["prompt_mfa"] = prompt_mfa
     # Legacy MFA flow.
     elif _supports_parameter(Garmin.__init__, "return_on_mfa"):
         kwargs["return_on_mfa"] = True

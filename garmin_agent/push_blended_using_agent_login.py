@@ -3,23 +3,27 @@ import json
 import os
 import sys
 
-from auth import login
+from auth import load_local_env, login
 
 
 def main():
+    load_local_env()
     here = Path(__file__).parent
     payload_path = here / "data" / "garmin_payload.json"
     if not payload_path.exists():
         print("Missing garmin_payload.json. Run blend_for_garmin.py first.", file=sys.stderr)
         sys.exit(2)
 
+    print(f"Loading Garmin payload from {payload_path.name}", flush=True)
     p = json.load(open(payload_path))
-    email = os.environ["GARMIN_EMAIL"]
-    pwd = os.environ["GARMIN_PASSWORD"]
+    email = os.getenv("GARMIN_EMAIL")
+    pwd = os.getenv("GARMIN_PASSWORD")
     mfa = os.environ.get("GARMIN_MFA_CODE")
 
+    print(f"Authenticating to Garmin for body composition upload on {p['date']}", flush=True)
     g = login(email, pwd, mfa)
 
+    print("Submitting body composition payload...", flush=True)
     resp = g.add_body_composition(
         p["date"],
         weight=p["weight"],
@@ -36,7 +40,7 @@ def main():
         bmi=p["bmi"],
     )
     print("Push response:", resp)
-    print("Uploaded for", p["date"])
+    print("Uploaded for", p["date"], flush=True)
 
 
 if __name__ == "__main__":

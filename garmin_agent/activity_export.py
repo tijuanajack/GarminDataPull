@@ -10,7 +10,7 @@ import json
 
 import pandas as pd
 
-from auth import login
+from auth import load_local_env, login
 
 # ---------- helpers ----------
 def iso_to_dt(s):
@@ -62,8 +62,9 @@ def compact_splits_from_list(split_summaries):
 
 # ---------- main ----------
 def main():
-    email = os.environ["GARMIN_EMAIL"]
-    pwd   = os.environ["GARMIN_PASSWORD"]
+    load_local_env()
+    email = os.getenv("GARMIN_EMAIL")
+    pwd   = os.getenv("GARMIN_PASSWORD")
     mfa   = os.getenv("GARMIN_MFA_CODE")
     g     = login(email, pwd, mfa)
 
@@ -73,16 +74,24 @@ def main():
     days = int(os.getenv("DAYS_ACTIVITIES", "30"))
     today = datetime.now(timezone.utc).date()
     start_date = today - timedelta(days=days)
+    print(
+        f"Authenticated. Exporting Garmin activities from {start_date.isoformat()} to {today.isoformat()}...",
+        flush=True,
+    )
 
     # Pull list in one shot
     acts = g.get_activities_by_date(start_date.isoformat(), today.isoformat(), None) or []
+    print(f"Fetched {len(acts)} activities", flush=True)
 
     rows = []
-    for a in acts:
+    total_acts = len(acts)
+    for idx, a in enumerate(acts, start=1):
         # time handling
         start_local = a.get("startTimeLocal")
         dt = iso_to_dt(a.get("startTimeGMT") or start_local)
         act_date = (dt.date() if dt else None)
+        activity_name = a.get("activityName") or a.get("activityId") or "activity"
+        print(f"[{idx}/{total_acts}] Processing {activity_name}", flush=True)
 
         tkey = norm_type(a.get("activityType", {}).get("typeKey"))
         avg_spd = a.get("averageSpeed")
@@ -173,11 +182,13 @@ def main():
 
     df = pd.DataFrame(rows).sort_values(["date","start_local","activity_id"])
     out = data_dir / "latest_activity_summary.csv"
+    print(f"Writing {len(df)} activity rows to {out.name}", flush=True)
     df.to_csv(out, index=False)
     print(f"✅ saved {out.name} with {len(df)} rows")
     # Also save a dated archive
     dated = data_dir / f"activities_{today.isoformat()}.csv"
     df.to_csv(dated, index=False)
+    print(f"Archive write complete: {dated.name}", flush=True)
     print(f"🗃️ archived as {dated.name}")
 
 if __name__ == "__main__":

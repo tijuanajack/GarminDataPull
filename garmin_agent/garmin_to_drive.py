@@ -34,10 +34,14 @@ def main():
 
     today = datetime.today().date()
     rows  = []
+    total_days = 30
 
-    for i in range(30):
+    print(f"Authenticated. Pulling {total_days} days of Garmin data...", flush=True)
+
+    for i in range(total_days):
         day = today - timedelta(days=i)
         ds  = day.isoformat()
+        print(f"[{i + 1}/{total_days}] Fetching {ds}", flush=True)
         try:
             raw = {
                 "activity_stats":   g.get_stats(ds),
@@ -131,18 +135,20 @@ def main():
                 })
 
             rows.append(row)
+            print(f"[{i + 1}/{total_days}] Completed {ds}", flush=True)
 
         except Exception as e:
-            print(f"⚠️ {ds}: {e}")
+            print(f"[{i + 1}/{total_days}] Warning for {ds}: {e}", flush=True)
 
     if not rows:
         raise RuntimeError("No rows extracted; check API responses.")
 
     df = pd.DataFrame(rows).sort_values("date")
     out = data_dir / f"garmin_summary_{today}.csv"
+    print(f"Writing {len(df)} rows to {out.name} and latest_summary.csv", flush=True)
     df.to_csv(out, index=False)
     df.to_csv(data_dir / "latest_summary.csv", index=False)
-    print(f"✅ saved {out.name} and latest_summary.csv")
+    print(f"Saved {out.name} and latest_summary.csv", flush=True)
 
 if __name__ == "__main__":
     main()
