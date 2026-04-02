@@ -3,8 +3,8 @@ name: Daily Garmin Sync
 on:
   schedule:
     # 7 AM Central
-    # - cron: '0 12 * * *'   # 08:00 CDT  (Mar–Nov)
-    # - cron: '0 13 * * *'   # 08:00 CST  (Nov–Mar)
+    - cron: '0 12 * * *'   # 08:00 CDT  (Mar–Nov)
+    - cron: '0 13 * * *'   # 08:00 CST  (Nov–Mar)
 
   workflow_dispatch:
 
