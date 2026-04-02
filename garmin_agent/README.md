@@ -93,7 +93,15 @@ Environment options:
 | Variable | Default | Purpose |
 |---|---|---|
 | `GARMIN_TOKEN_CACHE_MODE` | `readwrite` | `readwrite` = use cached tokens + persist refreshed tokens, `readonly` = use cached tokens but never write, `off` = do not use token cache at all. |
-| `GARMIN_TOKEN_STORE_DIR` | `garmin_agent/data/.garminconnect` | Override where OAuth token files are read/written. Useful for CI secrets mounts or external persistent storage. |
+| `GARMIN_TOKEN_STORE_DIR` | `garmin_agent/data/.garminconnect` | Override where token files are read/written. Useful for CI secrets mounts or external persistent storage. |
+
+Current `python-garminconnect` releases write the modern token cache file as
+`garmin_tokens.json` inside the token store directory. In this repo, the default
+local path is `garmin_agent/data/.garminconnect/garmin_tokens.json`.
+
+For GitHub Actions, prefer storing that entire JSON file in a repository secret named
+`GARMIN_TOKENS_JSON`. The active workflows restore that file before login and still
+support the older `GARMIN_OAUTH1_TOKEN` / `GARMIN_OAUTH2_TOKEN` secrets as a fallback.
 
 This lets you keep tokens out of git-managed paths, disable writes in locked environments,
 or bypass cached tokens entirely when debugging account auth issues.
@@ -104,6 +112,13 @@ or bypass cached tokens entirely when debugging account auth issues.
 * **Token cache appears stale:** temporarily set `GARMIN_TOKEN_CACHE_MODE=off` and clear old token files in the token store (older versions used `oauth*_token.json`; newer versions use `garmin_tokens.json`).
 * **Permission error writing tokens:** set `GARMIN_TOKEN_STORE_DIR` to a writable folder. Ensure `curl_cffi` is installed for newer auth flows.
 * **Want safest first test:** set `GARMIN_TOKEN_CACHE_MODE=readonly`.
+
+## Refreshing CI token secret
+
+1. Run `python garmin_agent/auth.py` locally with `GARMIN_TOKEN_CACHE_MODE=readwrite`.
+2. Complete MFA once so the local token file is refreshed.
+3. Copy the contents of `garmin_agent/data/.garminconnect/garmin_tokens.json`.
+4. Save that JSON into the GitHub Actions secret `GARMIN_TOKENS_JSON`.
 
 ## Rollback (safe)
 

@@ -33,6 +33,10 @@ def _token_store_dir() -> Path:
     return Path(__file__).parent / "data" / ".garminconnect"
 
 
+def _token_store_file() -> Path:
+    return _token_store_dir() / "garmin_tokens.json"
+
+
 def _token_cache_mode() -> str:
     """Token mode: readwrite (default), readonly, or off."""
     mode = os.getenv("GARMIN_TOKEN_CACHE_MODE", "readwrite").strip().lower()
@@ -87,11 +91,21 @@ def _call_login(g: Garmin, store: Path | None):
     """Call Garmin.login in a way that supports old and new library versions."""
     if store is None:
         return g.login()
+    os.environ["GARMINTOKENS"] = str(store)
     try:
         return g.login(str(store))
     except TypeError:
         # Older versions expect no args and require explicit token dump.
         return g.login()
+
+
+def _prime_tokenstore_path(g: Garmin, store: Path | None) -> None:
+    """Ensure modern clients know where to persist refreshed tokens."""
+    if store is None:
+        return
+    client = getattr(g, "client", None)
+    if client is not None and hasattr(client, "_tokenstore_path"):
+        client._tokenstore_path = str(store)
 
 
 def login(email: Optional[str] = None, password: Optional[str] = None, mfa: Optional[str] = None) -> Garmin:
@@ -105,7 +119,7 @@ def login(email: Optional[str] = None, password: Optional[str] = None, mfa: Opti
     Supports both old garth-based auth and the newer mobile-SSO flow.
     """
     mode = _token_cache_mode()
-    store = _token_store_dir()
+    store = _token_store_file()
     can_read_tokens = mode in {"readwrite", "readonly"}
     can_write_tokens = mode == "readwrite"
 
@@ -126,6 +140,7 @@ def login(email: Optional[str] = None, password: Optional[str] = None, mfa: Opti
 
     try:
         g = _new_garmin_with_credentials(email, password, mfa)
+        _prime_tokenstore_path(g, store if can_write_tokens else None)
 
         login_result = _call_login(g, store if can_write_tokens else None)
 
@@ -141,9 +156,9 @@ def login(email: Optional[str] = None, password: Optional[str] = None, mfa: Opti
 
         # Legacy token persistence when login(path) is not supported.
         if can_write_tokens and hasattr(g, "garth"):
-            store.mkdir(parents=True, exist_ok=True)
+            store.parent.mkdir(parents=True, exist_ok=True)
             with contextlib.suppress(Exception):
-                g.garth.dump(str(store))
+                g.garth.dump(str(store.parent))
         return g
     except Exception as exc:
         raise GarminAuthError(f"Garmin authentication failed: {exc}") from exc
@@ -155,7 +170,7 @@ def main() -> None:
     password = os.getenv("GARMIN_PASSWORD")
     mfa = os.getenv("GARMIN_MFA_CODE")
     login(email, password, mfa)
-    print(f"Authenticated with Garmin. Token store: {_token_store_dir()}")
+    print(f"Authenticated with Garmin. Token store: {_token_store_file()}")
 
 
 if __name__ == "__main__":

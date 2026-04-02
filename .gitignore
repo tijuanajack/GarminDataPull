@@ -1,4 +1,4 @@
-!garmin_agent/data/.garminconnect/
+garmin_agent/data/.garminconnect/
 *.env
 .env
 __pycache__/

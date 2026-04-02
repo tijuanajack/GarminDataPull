@@ -25,12 +25,21 @@ jobs:
       - name: Restore Garmin OAuth tokens
         run: |
           mkdir -p garmin_agent/data/.garminconnect
+          if [ -n "${{ secrets.GARMIN_TOKENS_JSON }}" ]; then
+            cat <<'EOF' > garmin_agent/data/.garminconnect/garmin_tokens.json
+          ${{ secrets.GARMIN_TOKENS_JSON }}
+          EOF
+          fi
+          if [ -n "${{ secrets.GARMIN_OAUTH1_TOKEN }}" ]; then
           cat <<'EOF' > garmin_agent/data/.garminconnect/oauth1_token.json
           ${{ secrets.GARMIN_OAUTH1_TOKEN }}
           EOF
+          fi
+          if [ -n "${{ secrets.GARMIN_OAUTH2_TOKEN }}" ]; then
           cat <<'EOF' > garmin_agent/data/.garminconnect/oauth2_token.json
           ${{ secrets.GARMIN_OAUTH2_TOKEN }}
           EOF
+          fi
 
       - name: Setup Python
         uses: actions/setup-python@v5
