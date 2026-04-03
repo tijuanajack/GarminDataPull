@@ -1,8 +1,8 @@
 name: Daily Garmin Blended Weight Sync
 
 on:
-  # schedule:
-  #   - cron: "0 12 * * *"
+  schedule:
+     - cron: "0 12 * * *"
   push:
     branches: [main, master]
     paths:
